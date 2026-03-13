@@ -1,0 +1,129 @@
+{
+  "name": "note-md",
+  "displayName": "note-md",
+  "description": "非公式の note 向け Markdown プレビュー・画像処理・本文コピー",
+  "version": "0.1.0",
+  "publisher": "tekitounix",
+  "icon": "media/icon-marketplace.png",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tekitounix/note-md"
+  },
+  "bugs": {
+    "url": "https://github.com/tekitounix/note-md/issues"
+  },
+  "homepage": "https://github.com/tekitounix/note-md#readme",
+  "keywords": [
+    "note",
+    "markdown",
+    "preview",
+    "validator",
+    "publishing"
+  ],
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:markdown"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "note-md.openPreview",
+        "title": "note プレビューを開く",
+        "icon": {
+          "light": "media/icon-preview.svg",
+          "dark": "media/icon-preview.svg"
+        }
+      },
+      {
+        "command": "note-md.processImages",
+        "title": "note 向けに画像を処理してアップロード"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "note-md.openPreview",
+          "when": "resourceLangId == markdown",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "note-md",
+      "properties": {
+        "note-md.uploadExpiry": {
+          "type": "string",
+          "default": "72h",
+          "enum": [
+            "1h",
+            "12h",
+            "24h",
+            "72h"
+          ],
+          "description": "画像アップロードの有効期限"
+        },
+        "note-md.enabledUploadServices": {
+          "type": "array",
+          "default": [
+            "litterbox.catbox.moe",
+            "imgbb.com"
+          ],
+          "items": {
+            "type": "string",
+            "enum": [
+              "litterbox.catbox.moe",
+              "imgbb.com"
+            ]
+          },
+          "description": "利用する画像アップロードサービス。法務・運用要件に応じて明示的に選択してください"
+        },
+        "note-md.validator.disabledRules": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "無効にするバリデーションルール ID の一覧 (例: [\"note/no-inline-code\", \"note/hr-variant\"])"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "tsc -p ./ && node esbuild.mjs",
+    "test": "npm run compile && node --test test/*.test.js",
+    "watch": "node esbuild.mjs --watch",
+    "package": "node esbuild.mjs --production",
+    "typecheck": "tsc -p ./ --noEmit",
+    "lint": "eslint src/ test/",
+    "lint:fix": "eslint src/ test/ --fix",
+    "format": "prettier --write 'src/**/*.ts' 'test/**/*.js' '*.mjs' '*.json'",
+    "format:check": "prettier --check 'src/**/*.ts' 'test/**/*.js' '*.mjs' '*.json'"
+  },
+  "dependencies": {
+    "@jimp/wasm-webp": "^1.6.0",
+    "@resvg/resvg-wasm": "^2.6.2",
+    "jimp": "^1.6.0",
+    "markdown-it": "^14.1.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/markdown-it": "^14.1.2",
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.27.4",
+    "eslint": "^10.0.3",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.5",
+    "prettier": "^3.8.1",
+    "typescript": "^5.3.0",
+    "typescript-eslint": "^8.57.0"
+  }
+}
