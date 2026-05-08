@@ -1,5 +1,5 @@
-ai_ops_sha = "bcf2ffc3ceb2542f68db9f78631427ca15232d22"
-last_sync = "2026-05-08T16:03:00+00:00"
+ai_ops_sha = "7cd6a15db265edbf6ab537125446247e5dac438b"
+last_sync = "2026-05-08T19:21:56+00:00"
 workflow_tier = "C"
 project_type = "external"
 ci_profile = "cross-platform-app"
