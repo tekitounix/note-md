@@ -399,7 +399,10 @@ export class NotePreviewPanel {
         const articleDir = path.dirname(editor.document.fileName);
         const urlMap = loadUrlMap(articleDir) ?? undefined;
         const html = renderPreview(markdown, { urlMap });
-        const tmpPath = path.join(os.tmpdir(), `note-md-preview-${randomBytes(4).toString('hex')}.html`);
+        const tmpPath = path.join(
+          os.tmpdir(),
+          `note-md-preview-${randomBytes(4).toString('hex')}.html`,
+        );
         await fsp.writeFile(tmpPath, html, 'utf-8');
         this.tempPreviewFiles.push(tmpPath);
         vscode.env.openExternal(vscode.Uri.file(tmpPath));
