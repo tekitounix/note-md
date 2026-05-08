@@ -1,0 +1,40 @@
+ai_ops_sha = "bcf2ffc3ceb2542f68db9f78631427ca15232d22"
+last_sync = "2026-05-08T16:03:00+00:00"
+workflow_tier = "C"
+project_type = "external"
+ci_profile = "cross-platform-app"
+
+[language]
+operator_docs = "ja"
+user_facing = "ja"
+
+[ci]
+local_first = true
+required_remote_checks = []
+remote_state = "manual_release_only"
+default_pr_lane = ["npm lint", "npm format:check", "npm typecheck", "npm test", "npm package", "diff-check"]
+manual_lanes = ["ci", "release"]
+release_lanes = ["release workflow_dispatch"]
+
+[review]
+enabled = true
+monthly_usd_limit = 2.0
+per_pr_usd_limit = 0.15
+on_label = "review:request"
+skip_path_patterns = ["package-lock.json", "dist/**", "out/**"]
+
+[harness_files]
+".envrc" = "1d26c74fd25a4c3dbb09e029fc609588da499fd4af2a41c88f6316c7f8c54cf1"
+"AGENTS.md" = "7b47e41f4d9a746bce0bae6402d2ce59b384aeab53b2a7d829492afa1ce449d0"
+"CLAUDE.md" = "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49"
+"flake.nix" = "3ef39f6e6d63fee13e9737c2f9cdeeb8a8af76f197d669b2d3e0c8934d5cb310"
+[review.self]
+required = true
+mode = "current-agent"
+
+[review.local_cli]
+enabled = false
+default_agents = ["codex"]
+required_for = ["cross-cutting", "harness", "security", "tier-b-plus"]
+read_only = true
+output = "plans/active/<slug>/reviews/"

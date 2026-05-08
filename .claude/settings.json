@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./**/.env)",
+      "Read(./**/.env.*)",
+      "Read(./**/*.key)",
+      "Read(./**/*.pem)",
+      "Read(./**/id_rsa*)",
+      "Read(./**/id_ed25519*)",
+      "Read(./**/.envrc.local)",
+      "Read(./**/.netrc)",
+      "Read(./**/secrets/**)",
+      "Read(./**/credentials.json)",
+      "Read(./**/credentials.toml)"
+    ],
+    "allow": [
+      "Read(./.env.example)",
+      "Read(./.env.template)",
+      "Read(./**/secrets/*.enc.yaml)",
+      "Read(./**/secrets/*.enc.json)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(gh *)",
+      "Bash(ghq list*)",
+      "Bash(ls *)",
+      "Bash(cat *.md)",
+      "Bash(./scripts/check.sh)"
+    ]
+  }
+}
