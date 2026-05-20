@@ -1,8 +1,12 @@
 # AGENTS.md - note-md
 
-この repository は note 向け Markdown preview / validation / image processing を提供する VS Code extension である。ユーザー向け UI と README の主言語は日本語。source code identifier、machine token、commit message、branch name、LICENSE は英語を維持する。
+このリポジトリは note 向けの Markdown プレビュー、検証、画像処理を提供する VS Code 拡張である。ユーザー向け UI と README の主言語は日本語。コード識別子、機械トークン、コミットメッセージ、ブランチ名、LICENSE は英語を維持する。
 
-ai-ops の cross-project rules を継承する。破壊的操作、環境変更、workflow / release / package publish に関わる変更、public repo への push は Propose -> Confirm -> Execute を通す。read-only command と local check は確認不要。
+`github.com/tekitounix/ai-ops` の横断ルールを継承する。破壊的操作、環境変更、ワークフロー、リリース、パッケージ公開に関わる変更、公開リポジトリへの push は提案、確認、実行の順で進める。読み取り専用コマンドとローカル確認は確認不要。
+
+プロジェクト台帳は ai-org 側の登録簿を正本とする。ai-ops はこのリポジトリの運用規約、監査、ハーネスだけを担う。
+
+運用文書と作業指示は日本語を正本にする。英語は公開入口、識別子、機械トークン、外部サービス名、API 名に限って使う。
 
 ## Workspace
 

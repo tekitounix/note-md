@@ -1,12 +1,25 @@
-ai_ops_sha = "52e1640e3d266869389b71284d63f4a2ed5c4f06"
-last_sync = "2026-05-08T19:27:43+00:00"
+ai_ops_sha = "6a367d4e3de1397df02689131ddd1867e6b21194"
+last_sync = "2026-05-20T15:27:04+00:00"
 workflow_tier = "C"
+branch_strategy = "dev-flow"
 project_type = "external"
 ci_profile = "cross-platform-app"
 
 [language]
 operator_docs = "ja"
 user_facing = "ja"
+
+[workspace_visibility]
+hidden_entries = [
+  ".vscode",
+  "**/.vscode",
+  "dist",
+  "**/dist",
+  "node_modules",
+  "**/node_modules",
+  "out",
+  "**/out",
+]
 
 [ci]
 local_first = true
@@ -25,7 +38,7 @@ skip_path_patterns = ["package-lock.json", "dist/**", "out/**"]
 
 [harness_files]
 ".envrc" = "1d26c74fd25a4c3dbb09e029fc609588da499fd4af2a41c88f6316c7f8c54cf1"
-"AGENTS.md" = "7b47e41f4d9a746bce0bae6402d2ce59b384aeab53b2a7d829492afa1ce449d0"
+"AGENTS.md" = "fb5b61aef6fae1077739baa2da679f166c62c86c5c4fa830f427036babf39864"
 "CLAUDE.md" = "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49"
 "flake.nix" = "3ef39f6e6d63fee13e9737c2f9cdeeb8a8af76f197d669b2d3e0c8934d5cb310"
 [review.self]
