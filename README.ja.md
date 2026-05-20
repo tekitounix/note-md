@@ -1,6 +1,6 @@
 # note-md
 
-**English** | [日本語](README.ja.md)
+[English](README.md) | **日本語**
 
 
 非公式の note 向け Markdown プレビュー・画像処理・本文コピーを提供する VS Code 拡張機能。
