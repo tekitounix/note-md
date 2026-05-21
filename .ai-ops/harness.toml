@@ -38,9 +38,10 @@ skip_path_patterns = ["package-lock.json", "dist/**", "out/**"]
 
 [harness_files]
 ".envrc" = "1d26c74fd25a4c3dbb09e029fc609588da499fd4af2a41c88f6316c7f8c54cf1"
-"AGENTS.md" = "fb5b61aef6fae1077739baa2da679f166c62c86c5c4fa830f427036babf39864"
+"AGENTS.md" = "48d52e7b4eeb721aa9cb680b51450faecf758688747be1be801b5fe25f5b8a9c"
 "CLAUDE.md" = "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49"
 "flake.nix" = "3ef39f6e6d63fee13e9737c2f9cdeeb8a8af76f197d669b2d3e0c8934d5cb310"
+
 [review.self]
 required = true
 mode = "current-agent"
