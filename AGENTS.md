@@ -10,7 +10,7 @@
 
 ## Workspace
 
-- Canonical path: `~/ghq/github.com/tekitounix/note-md/`
+- Canonical path: `./`
 - Stack: TypeScript / VS Code extension / Node.js 20 / npm
 - Generated and build outputs: `out/`, `dist/`, `*.vsix`
 
