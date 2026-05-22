@@ -1,5 +1,5 @@
-ai_ops_sha = "b9ddb8a6b4a6b96538c69dc976cf02e7be6e2d31"
-last_sync = "2026-05-21T14:25:20+00:00"
+ai_ops_sha = "12844b5a784ddaac3b8eee95cbba9b766b126aff"
+last_sync = "2026-05-22T13:36:27+00:00"
 workflow_tier = "C"
 branch_strategy = "dev-flow"
 project_type = "external"
