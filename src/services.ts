@@ -5,14 +5,13 @@
  * `access-control-allow-origin: *` are usable — note.com's editor fetches
  * pasted image URLs from the browser (cross-origin), so CORS is required.
  *
- * Priority order (tested 2026-03):
+ * Priority order:
  *
  *  1. litterbox.catbox.moe  — Fastest (0.63s), Catbox LLC (US). Stable.
  *                             CORS: *. 1h–72h retention (selectable).
  *                             Catbox terms include a commercial-use approval clause.
- *  2. imgbb.com (ibb.co)   — CORS: *. 32 MB limit. Expiration parameter
- *                             supported (seconds). Served from i.ibb.co.
- *                             Uses the non-public /json endpoint (no API key).
+ *  2. imgbb.com (ibb.co)   — Opt-in fallback. Uses the non-public /json
+ *                             endpoint and may stop without notice.
  *
  * Excluded (no CORS on served files — note.com cannot fetch):
  *  - x0.at, uguu.se, catbox.moe, tmpfiles.org — all return no
@@ -27,7 +26,9 @@ import * as vscode from 'vscode';
 // ---------------------------------------------------------------------------
 
 const HC_TIMEOUT = 5000;
-export const DEFAULT_ENABLED_SERVICE_NAMES = ['litterbox.catbox.moe', 'imgbb.com'];
+const UPLOAD_TIMEOUT = 30000;
+const VERIFY_TIMEOUT = 10000;
+export const DEFAULT_ENABLED_SERVICE_NAMES = ['litterbox.catbox.moe'];
 
 export interface UploadService {
   readonly name: string;
@@ -63,6 +64,17 @@ async function headOk(url: string): Promise<boolean> {
   }
 }
 
+async function fetchWithTimeout(
+  input: string,
+  init: RequestInit,
+  timeoutMs = UPLOAD_TIMEOUT,
+): Promise<Response> {
+  return fetch(input, {
+    ...init,
+    signal: init.signal ?? AbortSignal.timeout(timeoutMs),
+  });
+}
+
 function assertHttps(name: string, body: string, allowedDomains?: string[]): string {
   const url = body.trim();
   if (!url.startsWith('https://')) {
@@ -80,6 +92,57 @@ function assertHttps(name: string, body: string, allowedDomains?: string[]): str
     }
   }
   return url;
+}
+
+async function verifyServedImage(name: string, url: string): Promise<void> {
+  const tryFetch = async (method: 'HEAD' | 'GET'): Promise<Response> =>
+    fetch(url, {
+      method,
+      headers: {
+        Origin: 'https://note.com',
+        ...(method === 'GET' ? { Range: 'bytes=0-0' } : {}),
+      },
+      signal: AbortSignal.timeout(VERIFY_TIMEOUT),
+    });
+
+  let method: 'HEAD' | 'GET' = 'HEAD';
+  let response = await tryFetch(method);
+  if (!response.ok || response.status === 405) {
+    method = 'GET';
+    response = await tryFetch(method);
+  }
+
+  let verificationError = servedImageVerificationError(name, response);
+  if (verificationError && method === 'HEAD') {
+    response = await tryFetch('GET');
+    verificationError = servedImageVerificationError(name, response);
+  }
+
+  if (verificationError) throw verificationError;
+}
+
+function servedImageVerificationError(name: string, response: Response): Error | null {
+  if (!response.ok && response.status !== 206) {
+    return new Error(`${name}: 配信 URL の検証に失敗しました: HTTP ${response.status}`);
+  }
+
+  const cors = response.headers.get('access-control-allow-origin') ?? '';
+  if (
+    cors !== '*' &&
+    !cors
+      .split(',')
+      .map((s) => s.trim())
+      .includes('https://note.com')
+  ) {
+    return new Error(`${name}: 配信 URL が note.com から取得できる CORS を返しません`);
+  }
+
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.toLowerCase().startsWith('image/')) {
+    return new Error(`${name}: 配信 URL の Content-Type が画像ではありません: ${contentType}`);
+  }
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +173,7 @@ class Litterbox implements UploadService {
     form.append('time', expiry);
     form.append('fileToUpload', new Blob([data]), fileName);
 
-    const r = await fetch('https://litterbox.catbox.moe/resources/internals/api.php', {
+    const r = await fetchWithTimeout('https://litterbox.catbox.moe/resources/internals/api.php', {
       method: 'POST',
       body: form,
     });
@@ -152,7 +215,7 @@ class ImgBB implements UploadService {
     const sec = IMGBB_EXPIRY_SEC[expiry] ?? 259200;
     form.append('expiration', String(sec));
 
-    const r = await fetch('https://imgbb.com/json', {
+    const r = await fetchWithTimeout('https://imgbb.com/json', {
       method: 'POST',
       body: form,
     });
@@ -195,9 +258,7 @@ export class ServiceManager {
   }
 
   private configuredServices(): UploadService[] {
-    const config = vscode.workspace.getConfiguration('note-md');
-    const configured = config.get<string[]>('enabledUploadServices', DEFAULT_ENABLED_SERVICE_NAMES);
-    const names = new Set((configured ?? []).filter(Boolean));
+    const names = configuredServiceNameSet(this.services.map((svc) => svc.name));
     return this.services.filter((svc) => names.has(svc.name));
   }
 
@@ -285,6 +346,7 @@ export class ServiceManager {
     for (const svc of candidates) {
       try {
         const url = await svc.upload(data, fileName, expiry);
+        await verifyServedImage(svc.name, url);
         const ms = svc.expiryMs(data.length, expiry);
         return {
           url,
@@ -322,4 +384,15 @@ export function getServiceManager(): ServiceManager {
 /** Reset the singleton — call from extension deactivate(). */
 export function resetServiceManager(): void {
   _mgr = undefined;
+}
+
+function configuredServiceNameSet(knownNames?: string[]): Set<string> {
+  const config = vscode.workspace.getConfiguration('note-md');
+  const configured = config.get<string[]>('enabledUploadServices', DEFAULT_ENABLED_SERVICE_NAMES);
+  const known = knownNames ? new Set(knownNames) : undefined;
+  return new Set((configured ?? []).filter((name) => Boolean(name) && (!known || known.has(name))));
+}
+
+export function getEnabledUploadServiceNames(): Set<string> {
+  return configuredServiceNameSet();
 }

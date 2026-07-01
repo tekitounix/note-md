@@ -1,8 +1,5 @@
 # note-md
 
-**English** | [日本語](README.ja.md)
-
-
 非公式の note 向け Markdown プレビュー・画像処理・本文コピーを提供する VS Code 拡張機能。
 
 > **本プロジェクトは note 株式会社および note.com とは無関係の個人プロジェクトです。**
@@ -98,7 +95,7 @@ VS Code Marketplace で **「note-md」** を検索してインストール。
 | 設定 | 説明 | デフォルト |
 |------|------|------------|
 | `note-md.uploadExpiry` | 画像アップロードの有効期限 | `72h` |
-| `note-md.enabledUploadServices` | 利用するアップロードサービス名の一覧 | `['litterbox.catbox.moe', 'imgbb.com']` |
+| `note-md.enabledUploadServices` | 利用するアップロードサービス名の一覧 | `['litterbox.catbox.moe']` |
 | `note-md.validator.disabledRules` | 無効化するバリデーションルール ID | `[]` |
 
 ## データの取り扱い
@@ -118,13 +115,13 @@ note のエディタはペースト時にブラウザ上で画像 URL を fetch 
 | 優先度 | サービス | 運営 | 保持期間 | CORS | 備考 |
 |--------|----------|------|----------|------|------|
 | 1 | [litterbox.catbox.moe](https://litterbox.catbox.moe/) | Catbox LLC (米国) | 1h–72h (設定可能) | `*` | 一時ホスティング専用。Catbox 利用規約に商用利用の事前承認条項あり |
-| 2 | [imgbb.com](https://imgbb.com/) (i.ibb.co) | ImgBB | 有効期限指定可 | `*` | 非公式エンドポイント (`/json`) を使用（後述） |
+| 2 | [imgbb.com](https://imgbb.com/) (i.ibb.co) | ImgBB | 有効期限指定可 | `*` | 既定無効。非公式エンドポイント (`/json`) を使用（後述） |
 
-既定では両サービスが有効です（litterbox 優先、imgbb はフォールバック）。
+既定では litterbox のみ有効です。imgbb は明示的に設定した場合だけフォールバック候補になります。
 
 > **imgbb.com について**: API キー不要の `/json` エンドポイントを使用しています。
 > これは imgbb.com の公式 API (`api.imgbb.com`) ではなく、Web フロントエンドが内部的に使用しているエンドポイントです。
-> 予告なく廃止・仕様変更される可能性があるため、フォールバック用途としてのみ利用しています。
+> 予告なく廃止・仕様変更される可能性があるため、既定では無効にしています。
 
 ### アクセス可能性
 
@@ -132,6 +129,7 @@ note のエディタはペースト時にブラウザ上で画像 URL を fetch 
 - パスワード保護や認証はありません
 - 機密画像や限定公開前提の画像はアップロードしないでください
 - サービス提供者側で IP アドレス、ファイル名、ハッシュ、アップロード時刻等が記録される場合があります
+- 拡張機能は初回同意後に接続確認を行い、アップロード後の配信 URL が note.com から取得できる CORS と画像 Content-Type を返すか検証します
 
 ### 目的と仕組み
 
@@ -157,8 +155,9 @@ note のエディタはペースト時にブラウザ上で画像 URL を fetch 
 ## 開発
 
 - ビルド: `npm run compile`
-- 回帰テスト: `npm test`
+- 回帰テスト: `npm test`（単体テスト + VS Code Extension Host 統合テスト）
 - パッケージ: `npm run package`
+- デバッグ: VS Code の `Run Extension` を起動すると `test-workspace/sample.md` が開きます
 
 ## ドキュメント
 

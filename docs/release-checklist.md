@@ -1,12 +1,14 @@
 # リリースチェックリスト
 
-最終更新日: 2026-03-14
+最終更新日: 2026-07-02
 
 ## ビルドとテスト
 
-- npm run compile が通る
-- npm test が通る
-- production build が通る
+- `./scripts/check.sh` が通る
+- `git diff --check` が通る
+- `actionlint .github/workflows/*.yml` が通る（`./scripts/check.sh` 内でも導入済み環境では実行）
+- `shellcheck scripts/check.sh` が通る（`./scripts/check.sh` 内でも導入済み環境では実行）
+- `python3 -m ai_ops audit ci --path . --json` の結果を確認する
 
 ## 機能確認
 
@@ -28,13 +30,13 @@
 ## バリデータ確認
 
 - Problems に主要ルールが出る
-- プレビュー注釈が更新に追従する
 - note-ignore-next-line が効く
 - Quick Fix が主要ルールで動く
 
 ## ドキュメント確認
 
 - README が現行機能と設定に一致する
+- README は日本語の単一入口 (`README.md`) のままで、通常開発中に `README.ja.md` や `README.en.md` を復活させていない
 - docs/format-reference.md が現行の本文コピー仕様に一致する
 - docs/paste-workflow.md が現行運用の正本になっている
 - docs/architecture.md と docs/validator.md が実装責務に一致する
@@ -52,9 +54,19 @@
 ## 公開前処理
 
 - package.json の version を更新する
+- Git tag (`vX.Y.Z`) と package.json の version が一致している
 - package.json の publisher・表示名・説明・キーワードが公開方針と一致している
 - 拡張機能アイコンが正式版アセットとして package に含まれている
 - changelog 相当のリリースノートを用意する
 - 不要な検証用ファイルが残っていない
+- `npx --no-install vsce ls` で `.ai-ops/`、`.claude/`、`AGENTS.md`、`plans/`、未公開の検証用ファイルが同梱されないことを確認する
+- `npx --no-install vsce package -o note-md-<version>.vsix` で生成した `.vsix` をローカルにインストールし、主要操作を確認する
 - git status がクリーンである
 - 公開対象コミットが確定している
+
+## 公開操作
+
+- GitHub Release 用 workflow_dispatch の `tag` が公開対象タグと一致している
+- Marketplace へ同時公開する場合だけ `publish_marketplace` を `true` にする
+- 同時公開する場合は承認環境と `VSCE_PAT` の設定を確認する
+- Marketplace へ公開しない場合は `publish_marketplace` を `false` にし、生成された `.vsix` と GitHub Release だけを成果物にする

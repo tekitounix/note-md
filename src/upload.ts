@@ -13,7 +13,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { getServiceManager } from './services';
+import { getEnabledUploadServiceNames, getServiceManager } from './services';
 import { normalizeImageRef } from './imageRefs';
 
 const MAX_CACHE_ENTRIES = 200;
@@ -80,7 +80,7 @@ export function loadRegistry(articleDir: string): CacheMap {
   return cache;
 }
 
-export function saveRegistry(_articleDir: string, cache: CacheMap): void {
+export function saveRegistry(articleDir: string, cache: CacheMap): void {
   const now = Date.now();
 
   // Purge expired entries
@@ -98,6 +98,8 @@ export function saveRegistry(_articleDir: string, cache: CacheMap): void {
       delete cache[k];
     }
   }
+
+  urlMapSnapshots.delete(articleDir);
 }
 
 // ---------------------------------------------------------------------------
@@ -124,7 +126,8 @@ export async function uploadWithRegistry(
   const existing = cache[hash];
   if (existing && !force) {
     const expired = existing.expiresAt !== null && existing.expiresAt < now;
-    if (!expired) {
+    const serviceEnabled = getEnabledUploadServiceNames().has(existing.serviceName);
+    if (!expired && serviceEnabled) {
       rememberSourceRef(existing, sourceRef);
       return {
         fileName,

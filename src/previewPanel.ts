@@ -57,6 +57,8 @@ export class NotePreviewPanel {
   private generation = 0;
   /** Document version of the last incremental render — skip if unchanged. */
   private lastRenderedVersion = -1;
+  /** Capability token accepted from the current Webview document. */
+  private webviewMessageToken = '';
   /** Temp HTML files created for browser preview — cleaned up on dispose. */
   private tempPreviewFiles: string[] = [];
   /** Callbacks invoked when the panel is disposed. */
@@ -110,16 +112,6 @@ export class NotePreviewPanel {
       return;
     }
 
-    // Build localResourceRoots from workspace folders + document directory
-    const roots: vscode.Uri[] = [];
-    if (vscode.workspace.workspaceFolders) {
-      for (const wf of vscode.workspace.workspaceFolders) {
-        roots.push(wf.uri);
-      }
-    }
-    // Always include the document's directory (may be outside workspace)
-    roots.push(vscode.Uri.file(path.dirname(document.fileName)));
-
     const panel = vscode.window.createWebviewPanel(
       NotePreviewPanel.viewType,
       `note プレビュー: ${path.basename(document.fileName)}`,
@@ -127,7 +119,7 @@ export class NotePreviewPanel {
       {
         enableScripts: true,
         retainContextWhenHidden: true,
-        localResourceRoots: roots,
+        localResourceRoots: [vscode.Uri.file(path.dirname(document.fileName))],
       },
     );
 
@@ -172,9 +164,12 @@ export class NotePreviewPanel {
    * the copy button enabled without triggering the upload dialog.
    */
   private async checkAndUpload(document: vscode.TextDocument, delayMs: number): Promise<void> {
+    const targetUri = document.uri.toString();
+    const gen = this.generation;
     const articleDir = path.dirname(document.fileName);
     const fp = await computeImageFingerprint(document.getText(), articleDir);
-    const gen = this.generation;
+
+    if (this.documentUri.toString() !== targetUri || this.generation !== gen) return;
 
     if (fp === null) {
       // No local images — enable copy immediately
@@ -305,6 +300,10 @@ export class NotePreviewPanel {
     this.lastImageFingerprint = null; // reset for new document
     this.lastRenderedVersion = -1;
     this.panel.title = `note プレビュー: ${path.basename(document.fileName)}`;
+    this.panel.webview.options = {
+      ...this.panel.webview.options,
+      localResourceRoots: [vscode.Uri.file(path.dirname(document.fileName))],
+    };
     this.fullRender(document);
     // checkAndUpload will be triggered by the 'webview-ready' message
     // after the new page's JS initializes.
@@ -313,6 +312,7 @@ export class NotePreviewPanel {
   /** Full-page render (initial load or document switch). */
   private fullRender(document: vscode.TextDocument): void {
     this.generation++;
+    this.webviewMessageToken = getNonce();
     const markdown = document.getText();
     const articleDir = path.dirname(document.fileName);
     const urlMap = loadUrlMap(articleDir) ?? undefined;
@@ -324,7 +324,9 @@ export class NotePreviewPanel {
       nonce,
       cspSource: webview.cspSource,
       baseUri: baseUri.toString(),
+      articleDir,
       generation: this.generation,
+      messageToken: this.webviewMessageToken,
     });
     webview.html = html;
   }
@@ -341,6 +343,7 @@ export class NotePreviewPanel {
     const result = renderBody(markdown, {
       urlMap,
       baseUri: baseUri.toString(),
+      articleDir,
     });
     webview.postMessage({
       type: 'update',
@@ -355,6 +358,8 @@ export class NotePreviewPanel {
   }
 
   private async handleMessage(msg: { type: string; [key: string]: unknown }): Promise<void> {
+    if (!this.isTrustedWebviewMessage(msg)) return;
+
     switch (msg.type) {
       case 'webview-ready': {
         // Webview JS has initialized and its message listener is active.
@@ -396,9 +401,7 @@ export class NotePreviewPanel {
         );
         if (!editor) return;
         const markdown = editor.document.getText();
-        const articleDir = path.dirname(editor.document.fileName);
-        const urlMap = loadUrlMap(articleDir) ?? undefined;
-        const html = renderPreview(markdown, { urlMap });
+        const html = renderPreview(markdown);
         const tmpPath = path.join(
           os.tmpdir(),
           `note-md-preview-${randomBytes(4).toString('hex')}.html`,
@@ -425,6 +428,13 @@ export class NotePreviewPanel {
         vscode.window.showErrorMessage(String(msg.text));
         break;
     }
+  }
+
+  private isTrustedWebviewMessage(msg: { type: string; [key: string]: unknown }): boolean {
+    if (typeof msg.type !== 'string') return false;
+    if (typeof msg.token !== 'string' || msg.token !== this.webviewMessageToken) return false;
+    if (typeof msg.gen !== 'number' || msg.gen !== this.generation) return false;
+    return true;
   }
 
   private dispose(): void {

@@ -25,7 +25,7 @@ note-md は、VS Code Extension Host 側で Markdown の解析・画像処理・
 WebviewPanel の単一インスタンス管理。フルレンダリング、差分更新、画像アップロードの起動、generation による stale message 排除を担当。
 
 - src/render.ts
-Markdown から note 風 HTML を生成。TOC 生成、ruby / Mermaid / 数式の変換、文字数カウント、Webview 用 CSS/JS テンプレートを持つ。
+原稿から note 風の本文を生成する。目次生成、ルビ、図、数式、文字数カウント、表示用のスタイルと操作スクリプトを持つ。原稿由来の生 HTML は許可リストで安全化する。
 
 - src/imageProcessor.ts
 Markdown からローカル画像参照を抽出し、必要なら PNG 変換し、アップロードして URL マップを返す。
@@ -37,7 +37,7 @@ Markdown からローカル画像参照を抽出し、必要なら PNG 変換し
 セッション内アップロードキャッシュ。SHA-256 をキーに URL を再利用し、source ref ごとの URL マップを構築する。
 
 - src/services.ts
-一時ホスティングサービス抽象化。ヘルスチェックと優先順位付きフォールバックを提供する。
+一時ホスティングサービス抽象化。ヘルスチェック、アップロード後の配信 URL 検証、優先順位付きフォールバックを提供する。
 
 - src/validator.ts
 note 非対応記法や危険なパターンの診断本体。
@@ -66,8 +66,8 @@ render.ts に埋め込まれた JS が以下を担当する。
 1. extension.ts が Markdown の変更を検知する
 2. previewPanel.ts が現在の追従対象ドキュメントなら incrementalUpdate を呼ぶ
 3. render.ts の renderBody() が本文 HTML、TOC、charCount を生成する
-4. previewPanel.ts が update メッセージを Webview に送る
-5. Webview が DOM を更新し、KaTeX / Mermaid / highlight.js を再適用する
+4. previewPanel.ts が generation 付き update メッセージを Webview に送る
+5. 表示側が世代番号の一致時だけ本文を更新し、数式、図、コード強調を再適用する
 
 ### 初回表示または文書切り替え
 
@@ -82,7 +82,7 @@ render.ts に埋め込まれた JS が以下を担当する。
 2. imageRefs.ts が articleDir 配下かつ symlink 越えしていない実ファイルだけを通す
 3. 非対応形式は jimp / resvg-wasm で PNG に変換する
 4. upload.ts が SHA-256 ベースでキャッシュ再利用する
-5. services.ts が利用可能なアップロード先へフォールバックしながら送信する
+5. services.ts が利用可能なアップロード先へフォールバックしながら送信し、返却 URL の CORS と Content-Type を検証する
 6. previewPanel.ts と render.ts が source ref ベースの urlMap で画像 URL を差し替える
 
 ### 文字数カウント
@@ -102,6 +102,8 @@ render.ts に埋め込まれた JS が以下を担当する。
 ### generation
 
 previewPanel.ts はフルレンダリングごとに generation を進める。Webview 側は受信したメッセージの gen が現在値と一致する場合だけ適用し、文書切り替え中の古い非同期結果を破棄する。
+
+表示側から拡張ホストへ送る操作メッセージにも世代番号と一時トークンを含める。拡張ホストは現在の値と一致しないメッセージを拒否する。
 
 ### 画像キャッシュ
 

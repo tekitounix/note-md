@@ -1,5 +1,8 @@
 .vscode/**
 .vscode-test/**
+.vscode-test.*
+.ai-ops/**
+.claude/**
 .github/**
 out/**
 src/**
@@ -19,7 +22,12 @@ package-lock.json
 **/*.ts
 **/*.map
 *.vsix
+AGENTS.md
 CLAUDE.md
+.envrc
+flake.nix
+plans/**
+scripts/**
 .prettierrc.json
 .prettierignore
 eslint.config.mjs

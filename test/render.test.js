@@ -1,6 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const Module = require('node:module');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const originalLoad = Module._load;
 Module._load = function (request, parent, isMain) {
@@ -206,4 +209,39 @@ test('renderBody returns empty urlMapJson when no urlMap provided', () => {
   const md = '# T\n\ntext';
   const result = renderBody(md);
   assert.equal(result.urlMapJson, '{}');
+});
+
+test('renderBody sanitizes raw HTML scripts and event handlers', () => {
+  const md = '# T\n\n<script>alert(1)</script><p onclick="alert(2)">本文</p>';
+  const result = renderBody(md);
+  assert.ok(!result.bodyHtml.includes('<script'), 'script tags should be removed');
+  assert.ok(!result.bodyHtml.includes('onclick='), 'event handler attributes should be removed');
+  assert.ok(result.bodyHtml.includes('<p>本文</p>'), 'safe paragraph HTML should remain');
+});
+
+test('renderBody escapes Mermaid source instead of injecting it as HTML', () => {
+  const md = '# T\n\n```mermaid\n</div><script>alert(1)</script>\n```';
+  const result = renderBody(md);
+  assert.ok(result.bodyHtml.includes('class="mermaid"'), 'mermaid container should remain');
+  assert.ok(
+    !result.bodyHtml.includes('<script>'),
+    'mermaid source must not become executable HTML',
+  );
+  assert.ok(result.bodyHtml.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
+});
+
+test('renderBody does not resolve local images outside articleDir into webview URIs', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'note-md-render-'));
+  const articleDir = path.join(root, 'article');
+  fs.mkdirSync(articleDir);
+  try {
+    const result = renderBody('# T\n\n![x](../secret.png)', {
+      articleDir,
+      baseUri: 'vscode-resource://article',
+    });
+    assert.ok(!result.bodyHtml.includes('vscode-resource://article/../secret.png'));
+    assert.ok(result.bodyHtml.includes('src=""'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

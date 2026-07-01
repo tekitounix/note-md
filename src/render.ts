@@ -11,7 +11,8 @@
  */
 
 import MarkdownIt from 'markdown-it';
-import { resolveMappedImageUrl } from './imageRefs';
+import sanitizeHtml from 'sanitize-html';
+import { resolveLocalImageRef, resolveMappedImageUrl } from './imageRefs';
 import { parseFrontmatter } from './frontmatter';
 
 // ---------------------------------------------------------------------------
@@ -46,6 +47,66 @@ const CDN_ORIGINS = [
       .map((v) => new URL(v).origin),
   ),
 ].join(' ');
+
+const SANITIZE_OPTIONS: sanitizeHtml.IOptions = {
+  allowedTags: [
+    'a',
+    'b',
+    'blockquote',
+    'br',
+    'cite',
+    'code',
+    'del',
+    'div',
+    'em',
+    'footer',
+    'h1',
+    'h2',
+    'h3',
+    'h4',
+    'h5',
+    'h6',
+    'hr',
+    'i',
+    'img',
+    'li',
+    'mark',
+    'ol',
+    'p',
+    'pre',
+    'rp',
+    'rt',
+    'ruby',
+    's',
+    'span',
+    'strong',
+    'sub',
+    'sup',
+    'u',
+    'ul',
+  ],
+  allowedAttributes: {
+    '*': ['class', 'data-source-line', 'id'],
+    a: ['href', 'rel', 'target', 'title'],
+    blockquote: ['style'],
+    cite: ['style'],
+    div: ['style'],
+    footer: ['style'],
+    img: ['alt', 'height', 'src', 'title', 'width'],
+    p: ['style'],
+    span: ['style'],
+  },
+  allowedSchemes: ['http', 'https', 'mailto'],
+  allowedSchemesByTag: {
+    img: ['http', 'https', 'data'],
+  },
+  allowedStyles: {
+    '*': {
+      'text-align': [/^(left|right|center)$/],
+    },
+  },
+  disallowedTagsMode: 'discard',
+};
 
 // ---------------------------------------------------------------------------
 // markdown-it setup
@@ -162,22 +223,40 @@ function escHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
+function sanitizeRenderedHtml(html: string): string {
+  return sanitizeHtml(html, SANITIZE_OPTIONS);
+}
+
+function encodeWebviewPath(sourceRef: string): string {
+  return sourceRef.split('/').map(encodeURIComponent).join('/');
+}
+
 /**
  * Resolve image src attributes — prefer uploaded URL from urlMap,
  * fall back to baseUri for local preview.
  */
-function resolveImageSrcs(html: string, urlMap?: Record<string, string>, baseUri?: string): string {
+function resolveImageSrcs(
+  html: string,
+  urlMap?: Record<string, string>,
+  baseUri?: string,
+  articleDir?: string,
+): string {
   return html.replace(/src="(?!https?:|data:|#)([^"]+)"/g, (_match, src: string) => {
     // Normalize backslashes for Windows paths in Markdown (e.g. images\photo.png)
     const normalizedSrc = src.replace(/\\/g, '/');
-    const mapped = resolveMappedImageUrl(urlMap, normalizedSrc);
+    const resolved = articleDir ? resolveLocalImageRef(articleDir, normalizedSrc) : null;
+    const sourceRef = resolved?.sourceRef ?? normalizedSrc.replace(/^(?:\.\/)+/, '');
+    const mapped = resolveMappedImageUrl(urlMap, sourceRef);
     // Always preserve original relative path so resolveBodyImages can re-resolve
     // after url-map-updated arrives (e.g. TIFF/WebP converted async).
-    const dataSrc = ` data-original-src="${normalizedSrc}"`;
-    if (mapped) return `src="${mapped}"${dataSrc}`;
+    const dataSrc = ` data-original-src="${escHtml(sourceRef)}"`;
+    if (mapped) return `src="${escHtml(mapped)}"${dataSrc}`;
     // Fall back to local webview URI
-    if (baseUri) return `src="${baseUri}/${encodeURI(normalizedSrc)}"${dataSrc}`;
-    return `src="${normalizedSrc}"${dataSrc}`;
+    if (baseUri && resolved?.exists) {
+      return `src="${baseUri}/${encodeWebviewPath(resolved.sourceRef)}"${dataSrc}`;
+    }
+    if (baseUri && articleDir) return `src=""${dataSrc}`;
+    return `src="${escHtml(normalizedSrc)}"${dataSrc}`;
   });
 }
 
@@ -317,8 +396,12 @@ export interface RenderOptions {
   cspSource?: string;
   /** Base URI for local resource resolution */
   baseUri?: string;
+  /** Article directory used to enforce local image boundaries */
+  articleDir?: string;
   /** Generation counter for stale-message rejection in Webview */
   generation?: number;
+  /** Capability token required for Webview→Extension messages */
+  messageToken?: string;
 }
 
 /** Shared render pipeline — transforms raw markdown into processed content. */
@@ -336,14 +419,15 @@ function renderContent(
   // Parse frontmatter (e.g. header image) and strip it before rendering
   const { data: frontmatter, content: markdownBody } = parseFrontmatter(markdown);
   let body = md.render(markdownBody);
+  body = sanitizeRenderedHtml(body);
 
   // Convert mermaid code blocks to renderable divs (before inline code strip)
   body = body.replace(
     /<pre[^>]*><code[^>]*class="language-mermaid"[^>]*>([\s\S]*?)<\/code><\/pre>/g,
     (_m, content: string) => {
       const decoded = content.replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&amp;/g, '&');
-      const escaped = decoded.replace(/"/g, '&quot;');
-      return `<div class="mermaid" data-original="${escaped}">${decoded}</div>`;
+      const escaped = escHtml(decoded);
+      return `<div class="mermaid" data-original="${escaped}">${escaped}</div>`;
     },
   );
 
@@ -362,7 +446,7 @@ function renderContent(
 
   // Resolve local image paths — use uploaded URL from urlMap when available,
   // otherwise fall back to webview URI.
-  body = resolveImageSrcs(body, opts?.urlMap, opts?.baseUri);
+  body = resolveImageSrcs(body, opts?.urlMap, opts?.baseUri, opts?.articleDir);
 
   body = stripBlockGaps(body);
 
@@ -376,8 +460,13 @@ function renderContent(
     const mapped = resolveMappedImageUrl(opts?.urlMap, headerImagePath);
     if (mapped) {
       headerImagePath = mapped;
+    } else if (opts?.baseUri && opts.articleDir) {
+      const resolved = resolveLocalImageRef(opts.articleDir, headerImagePath);
+      headerImagePath = resolved?.exists
+        ? `${opts.baseUri}/${encodeWebviewPath(resolved.sourceRef)}`
+        : undefined;
     } else if (opts?.baseUri) {
-      headerImagePath = `${opts.baseUri}/${headerImagePath}`;
+      headerImagePath = `${opts.baseUri}/${encodeWebviewPath(headerImagePath.replace(/\\/g, '/'))}`;
     }
   }
 
@@ -405,6 +494,7 @@ export function renderPreview(markdown: string, opts?: RenderOptions): string {
 
   const nonce = opts?.nonce ?? '';
   const cspSource = opts?.cspSource ?? '';
+  const messageToken = opts?.messageToken ?? '';
 
   return buildPage(
     escHtml(title),
@@ -416,6 +506,7 @@ export function renderPreview(markdown: string, opts?: RenderOptions): string {
     cspSource,
     opts?.generation,
     charCount,
+    messageToken,
   );
 }
 
@@ -465,9 +556,11 @@ function buildPage(
   cspSource: string,
   generation?: number,
   charCount?: number,
+  messageToken?: string,
 ): string {
   const isWebview = nonce !== '';
   const nonceAttr = isWebview ? ` nonce="${nonce}"` : '';
+  const messageTokenJson = JSON.stringify(messageToken ?? '').replace(/</g, '\\u003c');
   const cspMeta = isWebview
     ? `\n  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} ${CDN_ORIGINS} 'unsafe-inline'; script-src 'nonce-${nonce}' ${CDN_ORIGINS}; img-src ${cspSource} https: data:; font-src ${CDN_ORIGINS}; worker-src blob:;">`
     : '';
@@ -524,6 +617,7 @@ ${body}
   <script${nonceAttr}>
     window.__urlMap = ${urlMapJson};
     window.__gen = ${generation ?? 0};
+    window.__messageToken = ${messageTokenJson};
   </script>
   <script${nonceAttr} src="${CDN.highlightJs}"
           integrity="${CDN.highlightJsSri}"
@@ -950,6 +1044,15 @@ const JS = `
     // VS Code Webview API (guard for browser preview)
     const vscode = (typeof acquireVsCodeApi === 'function') ? acquireVsCodeApi() : null;
 
+    function postToExtension(type, payload) {
+      if (!vscode) return;
+      vscode.postMessage(Object.assign({
+        type,
+        gen: window.__gen,
+        token: window.__messageToken,
+      }, payload || {}));
+    }
+
     if (typeof hljs !== 'undefined') hljs.highlightAll();
 
     const statusEl = document.getElementById('status');
@@ -1023,7 +1126,7 @@ const JS = `
         case 'upload-failed':
           uploadStatusEl.textContent = '処理失敗';
           uploadStatusEl.className = 'upload-status error';
-          document.getElementById('copy-body-btn').disabled = false;
+          document.getElementById('copy-body-btn').disabled = true;
           break;
         case 'url-map-updated':
           window.__urlMap = msg.urlMap;
@@ -1218,17 +1321,17 @@ const JS = `
 
     /* Force upload button */
     document.getElementById('force-upload-btn').addEventListener('click', () => {
-      if (vscode) vscode.postMessage({ type: 'force-upload' });
+      postToExtension('force-upload');
     });
 
     /* Open in browser button */
     document.getElementById('open-browser-btn').addEventListener('click', () => {
-      if (vscode) vscode.postMessage({ type: 'open-in-browser' });
+      postToExtension('open-in-browser');
     });
 
     /* Open cheatsheet button */
     document.getElementById('open-cheatsheet-btn').addEventListener('click', () => {
-      if (vscode) vscode.postMessage({ type: 'open-cheatsheet' });
+      postToExtension('open-cheatsheet');
     });
 
     /* Copy button starts disabled; enabled only when Extension
@@ -1307,5 +1410,5 @@ const JS = `
     }, { passive: true });
 
     // Notify extension host that Webview JS is ready
-    if (vscode) vscode.postMessage({ type: 'webview-ready' });
-`;
+    postToExtension('webview-ready');
+  `;

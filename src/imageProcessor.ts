@@ -281,8 +281,12 @@ async function convertToPng(
       pngBuffer = Buffer.from(await image.getBuffer('image/png'));
     }
 
-    if (pngBuffer.length <= MAX_BYTES || currentWidth <= MIN_WIDTH) {
+    if (pngBuffer.length <= MAX_BYTES) {
       return pngBuffer;
+    }
+
+    if (currentWidth <= MIN_WIDTH) {
+      throw new Error('PNG 変換後も 20MB を超えています');
     }
 
     currentWidth = Math.max(Math.floor(currentWidth * 0.9), MIN_WIDTH);
@@ -359,6 +363,13 @@ export async function processImages(
         const srcBuffer = await fs.readFile(imgPath);
 
         if (isNoteSupported(ext)) {
+          if (srcBuffer.length > MAX_BYTES) {
+            failedCount++;
+            vscode.window.showErrorMessage(
+              `画像ファイルが 20MB を超えています: ${path.basename(imgPath)}`,
+            );
+            continue;
+          }
           // Supported format — use as-is
           prepared.push({
             sourceRef,
@@ -460,6 +471,12 @@ export async function processImages(
       if (cachedCount > 0) parts.push(`${cachedCount}件キャッシュ利用`);
       if (skippedCount > 0) parts.push(`${skippedCount}件スキップ`);
       if (failedCount > 0) parts.push(`${failedCount}件失敗`);
+
+      if (failedCount > 0 || skippedCount > 0) {
+        throw new Error(
+          `未処理のローカル画像があります（失敗 ${failedCount}件、スキップ ${skippedCount}件）`,
+        );
+      }
 
       const svcInfo = usedServices.size > 0 ? ` [${[...usedServices].join(', ')}]` : '';
       vscode.window.showInformationMessage(

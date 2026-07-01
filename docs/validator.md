@@ -22,10 +22,7 @@ Quick Fix を Code Action として出す。
 change/save 時に validate() を呼び、DiagnosticCollection を更新する。
 
 - src/previewPanel.ts
-最新の診断を保持し、update メッセージへ載せる。
-
-- src/render.ts
-data-source-line と注釈描画 UI を持つ。
+プレビューの lifecycle に合わせて Problems の診断をクリアする。診断表示自体は VS Code の Problems パネルに集約する。
 
 ## 実行タイミング
 

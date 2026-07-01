@@ -2,16 +2,13 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { NotePreviewPanel } from './previewPanel';
 import { processImages } from './imageProcessor';
-import { getServiceManager, resetServiceManager } from './services';
+import { resetServiceManager } from './services';
 import { ensureUploadConsent } from './consent';
 import { validate, validateAsync, type NoteDiagnostic } from './validator';
 import { NoteCodeActionProvider, diagCache } from './codeActions';
 import { resetUploadCache } from './upload';
 
 export function activate(context: vscode.ExtensionContext): void {
-  // Start upload service health check in the background
-  getServiceManager().initialize();
-
   // DiagnosticCollection
   const diagnostics = vscode.languages.createDiagnosticCollection('note-md');
   context.subscriptions.push(diagnostics);

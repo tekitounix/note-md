@@ -1,25 +1,25 @@
 # AGENTS.md - note-md
 
-このリポジトリは note 向けの Markdown プレビュー、検証、画像処理を提供する VS Code 拡張である。ユーザー向け UI と README の主言語は日本語。コード識別子、機械トークン、コミットメッセージ、ブランチ名、LICENSE は英語を維持する。
+このリポジトリは note 向けの Markdown プレビュー、検証、画像処理を提供する VS Code 拡張である。利用者に見える文言と README の主言語は日本語にする。コード識別子、機械トークン、コミットメッセージ、ブランチ名、LICENSE は英語を維持する。
 
 `github.com/tekitounix/ai-ops` の横断ルールを継承する。破壊的操作、環境変更、ワークフロー、リリース、パッケージ公開に関わる変更、公開リポジトリへの push は提案、確認、実行の順で進める。読み取り専用コマンドとローカル確認は確認不要。
 
-プロジェクト台帳は ai-org 側の登録簿を正本とする。ai-ops はこのリポジトリの運用規約、監査、ハーネスだけを担う。
+プロジェクト台帳は ghx registry を正本とする。ai-ops はこのリポジトリの運用規約、監査、ハーネスだけを担う。
 
 運用文書と作業指示は日本語を正本にする。英語は公開入口、識別子、機械トークン、外部サービス名、API 名に限って使う。
 
-## Workspace
+## 作業場所
 
-- Canonical path: `./`
-- Stack: TypeScript / VS Code extension / Node.js 20 / npm
-- Generated and build outputs: `out/`, `dist/`, `*.vsix`
+- 正本の場所: `./`
+- 技術構成: TypeScript、VS Code 拡張、Node.js 20、npm
+- 生成物: `out/`、`dist/`、`*.vsix`
 
-## Plans
+## 計画
 
 - 非自明な実行作業は `plans/active/<slug>/plan.md` を使う。
-- 短期 audit / review artifact は `plans/audits/<slug>/` に置き、採用後は durable docs / plan / backlog へ昇格するか削除する。
+- 短期の監査やレビュー証跡は `plans/audits/<slug>/` に置き、採用後は永続文書、実行計画、バックログへ昇格するか削除する。
 
-## Commands
+## コマンド
 
 ```sh
 npm ci
@@ -30,29 +30,29 @@ npm run package
 ./scripts/check.sh
 ```
 
-`./scripts/check.sh` を local-first gate の正本にする。remote GitHub Actions は通常 PR / main push の必須 check にしない。release / external evidence が必要なときだけ manual workflow を明示 dispatch する。
+`./scripts/check.sh` をローカル優先ゲートの正本にする。GitHub Actions は通常の PR や main への push で必須チェックにしない。リリースや外部証跡が必要なときだけ、手動ワークフローを明示して起動する。
 
-## Architecture
+## 構成
 
-- `src/extension.ts`: command registration、extension entrypoint。
-- `src/previewPanel.ts`: single WebviewPanel lifecycle。generation counter で stale message を避ける。
-- `src/render.ts`: markdown-it based note-style HTML rendering。
-- `src/validator.ts`: note-incompatible syntax diagnostics。
-- `src/codeActions.ts`: validator diagnostics から QuickFix CodeActions を作る。
-- `src/imageProcessor.ts`: local image extraction、PNG conversion、upload flow。
-- `src/imageRefs.ts`: image reference normalization と articleDir boundary。
-- `src/upload.ts`: session-only upload cache。disk persistence はしない。
-- `src/services.ts`: temporary hosting service abstraction。
-- `src/consent.ts`: upload consent dialog。
+- `src/extension.ts`: コマンド登録と拡張の入口。
+- `src/previewPanel.ts`: 単一の WebviewPanel の寿命管理。世代番号で古いメッセージを避ける。
+- `src/render.ts`: `markdown-it` による note 風 HTML 描画。
+- `src/validator.ts`: note 非互換構文の診断。
+- `src/codeActions.ts`: 診断から QuickFix を作る。
+- `src/imageProcessor.ts`: ローカル画像の抽出、PNG 変換、アップロード処理。
+- `src/imageRefs.ts`: 画像参照の正規化と `articleDir` 境界の検査。
+- `src/upload.ts`: セッション内だけのアップロードキャッシュ。ディスクへ保存しない。
+- `src/services.ts`: 一時ホスティングサービスの抽象化。
+- `src/consent.ts`: アップロード同意ダイアログ。
 
-## Product Rules
+## プロダクト規則
 
-- note 互換性の判断は Markdown source を正とし、rendered DOM だけで補正しない。
-- upload result は memory-only。secret / token / upload credential を repository や log に残さない。
-- symlink / path traversal で articleDir の外に出ないことを維持する。
-- user-facing command title / configuration description は日本語を既定にする。
+- note 互換性の判断は Markdown の原文を正とし、描画後の DOM だけで補正しない。
+- アップロード結果はメモリ内だけに置く。secret、token、upload credential をリポジトリやログに残さない。
+- symlink や path traversal で `articleDir` の外に出ないことを維持する。
+- 利用者に見えるコマンド名と設定説明は日本語を既定にする。
 
-## Verification
+## 検証
 
 完了報告前に少なくとも次を通す。
 
@@ -61,4 +61,4 @@ npm run package
 git diff --check
 ```
 
-package / release に触れた場合は、生成された `.vsix` の動作確認、version、release workflow の入力、Marketplace publish secret の扱いを別途確認する。
+パッケージやリリースに触れた場合は、生成された `.vsix` の内容と動作、version、リリースワークフローの入力、Marketplace 公開用 secret の扱いを別途確認する。

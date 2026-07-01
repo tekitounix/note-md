@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
+import { normalizeImageRef, resolveLocalImageRef, resolveLocalImageRefAsync } from './imageRefs';
 
 // ─── Interfaces ─────────────────────────────────────────────
 
@@ -19,7 +20,7 @@ export interface NoteDiagnostic {
 export interface QuickFix {
   title: string;
   edits: Array<{
-    range: { line: number; column: number; length: number };
+    range: { line: number; column: number; length: number; endLine?: number; endColumn?: number };
     newText: string;
   }>;
 }
@@ -176,6 +177,46 @@ function computeExclusionZones(line: string): Array<[number, number]> {
 
 function isInExclusionZone(zones: Array<[number, number]>, col: number, len: number): boolean {
   return zones.some(([s, e]) => col >= s && col + len <= e);
+}
+
+interface ImagePathMatch {
+  value: string;
+  pathStart: number;
+  length: number;
+}
+
+function markdownImagePathMatches(line: string): ImagePathMatch[] {
+  return [...line.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map((m) => {
+    const value = m[1].replace(/\s+"[^"]*"$/, '');
+    return {
+      value,
+      pathStart: m.index! + m[0].indexOf('(') + 1,
+      length: value.length,
+    };
+  });
+}
+
+function isExternalImageRef(imgPath: string): boolean {
+  return /^https?:\/\//.test(imgPath) || imgPath.startsWith('data:');
+}
+
+function hasLocalPathEscape(imgPath: string): boolean {
+  const slashNormalized = imgPath.replace(/\\/g, '/');
+  return (
+    slashNormalized.split('/').includes('..') ||
+    path.isAbsolute(imgPath) ||
+    /^[a-zA-Z]:[\\/]/.test(imgPath)
+  );
+}
+
+function isOutsideArticleDir(articleDir: string | undefined, imgPath: string): boolean {
+  if (isExternalImageRef(imgPath)) return false;
+  if (!articleDir) return hasLocalPathEscape(imgPath);
+  return resolveLocalImageRef(articleDir, imgPath) === null;
+}
+
+function normalizedImageExt(imgPath: string): string {
+  return path.posix.extname(normalizeImageRef(imgPath)).replace(/^\./, '').toUpperCase();
 }
 
 // ─── Helpers ────────────────────────────────────────────────
@@ -578,17 +619,15 @@ const rules: ValidationRule[] = [
       for (let i = 0; i < ctx.lines.length; i++) {
         if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
         const line = ctx.lines[i];
-        for (const m of line.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
-          const imgPath = m[1].replace(/\s+"[^"]*"$/, ''); // strip title
-          if (imgPath.includes('..')) {
-            const pathStart = m.index! + m[0].indexOf('(') + 1;
+        for (const img of markdownImagePathMatches(line)) {
+          if (isOutsideArticleDir(ctx.articleDir, img.value)) {
             results.push(
               diag(
                 this,
-                '画像パスにディレクトリトラバーサル (..) が含まれています',
+                '画像パスが記事ディレクトリの外を参照しています',
                 i,
-                pathStart,
-                imgPath.length,
+                img.pathStart,
+                img.length,
               ),
             );
           }
@@ -610,17 +649,19 @@ const rules: ValidationRule[] = [
       for (let i = 0; i < ctx.lines.length; i++) {
         if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
         const line = ctx.lines[i];
-        for (const m of line.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
-          const imgPath = m[1].replace(/\s+"[^"]*"$/, '');
-          // Skip URLs
-          if (/^https?:\/\//.test(imgPath)) continue;
-          // Directory traversal is reported by a separate rule
-          if (imgPath.includes('..')) continue;
-          const absPath = path.resolve(ctx.articleDir, imgPath);
-          if (!fs.existsSync(absPath)) {
-            const pathStart = m.index! + m[0].indexOf('(') + 1;
+        for (const img of markdownImagePathMatches(line)) {
+          if (isExternalImageRef(img.value)) continue;
+          const resolved = resolveLocalImageRef(ctx.articleDir, img.value);
+          if (!resolved) continue;
+          if (!resolved.exists) {
             results.push(
-              diag(this, `画像ファイルが見つかりません: ${imgPath}`, i, pathStart, imgPath.length),
+              diag(
+                this,
+                `画像ファイルが見つかりません: ${img.value}`,
+                i,
+                img.pathStart,
+                img.length,
+              ),
             );
           }
         }
@@ -642,22 +683,21 @@ const rules: ValidationRule[] = [
       for (let i = 0; i < ctx.lines.length; i++) {
         if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
         const line = ctx.lines[i];
-        for (const m of line.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
-          const imgPath = m[1].replace(/\s+"[^"]*"$/, '');
-          if (/^https?:\/\//.test(imgPath) || imgPath.includes('..')) continue;
-          const absPath = path.resolve(ctx.articleDir, imgPath);
+        for (const img of markdownImagePathMatches(line)) {
+          if (isExternalImageRef(img.value)) continue;
+          const resolved = resolveLocalImageRef(ctx.articleDir, img.value);
+          if (!resolved?.exists) continue;
           try {
-            const stat = fs.statSync(absPath);
+            const stat = fs.statSync(resolved.diskPath);
             if (stat.size > MAX_SIZE) {
               const mb = (stat.size / (1024 * 1024)).toFixed(1);
-              const pathStart = m.index! + m[0].indexOf('(') + 1;
               results.push(
                 diag(
                   this,
                   `画像ファイルが 20MB を超えています (${mb}MB)`,
                   i,
-                  pathStart,
-                  imgPath.length,
+                  img.pathStart,
+                  img.length,
                 ),
               );
             }
@@ -683,18 +723,16 @@ const rules: ValidationRule[] = [
       for (let i = 0; i < ctx.lines.length; i++) {
         if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
         const line = ctx.lines[i];
-        for (const m of line.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
-          const imgPath = m[1].replace(/\s+"[^"]*"$/, '');
-          if (/^https?:\/\//.test(imgPath)) continue;
-          if (autoConvert.test(imgPath)) {
-            const pathStart = m.index! + m[0].indexOf('(') + 1;
+        for (const img of markdownImagePathMatches(line)) {
+          if (isExternalImageRef(img.value)) continue;
+          if (autoConvert.test(img.value)) {
             results.push(
               diag(
                 this,
-                `${imgPath.split('.').pop()?.toUpperCase()} 形式はアップロード時に自動変換されます`,
+                `${normalizedImageExt(img.value)} 形式はアップロード時に自動変換されます`,
                 i,
-                pathStart,
-                imgPath.length,
+                img.pathStart,
+                img.length,
               ),
             );
           }
@@ -873,9 +911,13 @@ const rules: ValidationRule[] = [
                     title: '2行に削減',
                     edits: [
                       {
-                        range: { line: blankStart, column: 0, length: 0 },
-                        // Placeholder for CodeAction — actual line deletion
-                        // is complex via text replacement
+                        range: {
+                          line: blankStart + 2,
+                          column: 0,
+                          length: 0,
+                          endLine: i,
+                          endColumn: 0,
+                        },
                         newText: '',
                       },
                     ],
@@ -964,17 +1006,19 @@ const asyncRules: AsyncValidationRule[] = [
       for (let i = 0; i < ctx.lines.length; i++) {
         if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
         const line = ctx.lines[i];
-        for (const m of line.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
-          const imgPath = m[1].replace(/\s+"[^"]*"$/, '');
-          if (/^https?:\/\//.test(imgPath)) continue;
-          if (imgPath.includes('..')) continue;
-          const absPath = path.resolve(ctx.articleDir, imgPath);
-          try {
-            await fsp.access(absPath);
-          } catch {
-            const pathStart = m.index! + m[0].indexOf('(') + 1;
+        for (const img of markdownImagePathMatches(line)) {
+          if (isExternalImageRef(img.value)) continue;
+          const resolved = await resolveLocalImageRefAsync(ctx.articleDir, img.value);
+          if (!resolved) continue;
+          if (!resolved.exists) {
             results.push(
-              diag(this, `画像ファイルが見つかりません: ${imgPath}`, i, pathStart, imgPath.length),
+              diag(
+                this,
+                `画像ファイルが見つかりません: ${img.value}`,
+                i,
+                img.pathStart,
+                img.length,
+              ),
             );
           }
         }
@@ -995,22 +1039,21 @@ const asyncRules: AsyncValidationRule[] = [
       for (let i = 0; i < ctx.lines.length; i++) {
         if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
         const line = ctx.lines[i];
-        for (const m of line.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
-          const imgPath = m[1].replace(/\s+"[^"]*"$/, '');
-          if (/^https?:\/\//.test(imgPath) || imgPath.includes('..')) continue;
-          const absPath = path.resolve(ctx.articleDir, imgPath);
+        for (const img of markdownImagePathMatches(line)) {
+          if (isExternalImageRef(img.value)) continue;
+          const resolved = await resolveLocalImageRefAsync(ctx.articleDir, img.value);
+          if (!resolved?.exists) continue;
           try {
-            const stat = await fsp.stat(absPath);
+            const stat = await fsp.stat(resolved.diskPath);
             if (stat.size > MAX_SIZE) {
               const mb = (stat.size / (1024 * 1024)).toFixed(1);
-              const pathStart = m.index! + m[0].indexOf('(') + 1;
               results.push(
                 diag(
                   this,
                   `画像ファイルが 20MB を超えています (${mb}MB)`,
                   i,
-                  pathStart,
-                  imgPath.length,
+                  img.pathStart,
+                  img.length,
                 ),
               );
             }

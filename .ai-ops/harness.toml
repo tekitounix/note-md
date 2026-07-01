@@ -1,5 +1,5 @@
-ai_ops_sha = "12844b5a784ddaac3b8eee95cbba9b766b126aff"
-last_sync = "2026-05-22T13:36:27+00:00"
+ai_ops_sha = "6d92a7c57eba217368bbbffeb7d0ab9adff6d441"
+last_sync = "2026-07-01T18:19:32+00:00"
 workflow_tier = "C"
 branch_strategy = "dev-flow"
 project_type = "external"
@@ -8,6 +8,16 @@ ci_profile = "cross-platform-app"
 [language]
 operator_docs = "ja"
 user_facing = "ja"
+
+[language.code_comments]
+scan_roots = ["scripts"]
+suffixes = [".sh"]
+
+[publication]
+visibility = "public"
+release_intent = "none"
+md_i18n_active = false
+view_layout = "subdirectory"
 
 [workspace_visibility]
 hidden_entries = [
@@ -29,6 +39,50 @@ default_pr_lane = ["npm lint", "npm format:check", "npm typecheck", "npm test", 
 manual_lanes = ["ci", "release"]
 release_lanes = ["release workflow_dispatch"]
 
+[local_execution]
+heavy_confirmation_required = true
+cpu_limit_required = true
+wrapper = "ai-ops run-heavy"
+default_max_parallel_jobs = 1
+default_max_cores = 1
+stop_on_user_complaint = true
+remote_builders_allowed = false
+required_confirmation_fields = [
+  "command",
+  "purpose",
+  "cpu_limit",
+  "stop_condition",
+  "lightweight_alternative",
+]
+allowed_without_confirmation = [
+  "read-only",
+  "diff",
+  "syntax-check",
+  "targeted-unit-test",
+  "nix-eval",
+]
+heavy_command_prefixes = [
+  "nix build",
+  "nix develop",
+  "nix flake check",
+  "nix profile install",
+  "nix profile upgrade",
+  "nix run",
+  "cargo test",
+  "cargo build --release",
+  "xcodebuild",
+  "bazel build",
+  "bazel test",
+  "docker build",
+  "make -j",
+  "xmake -j",
+  "cold-agent e2e",
+  "npm ci",
+  "npm run package",
+  "npx vsce",
+  "npx --no-install vsce",
+]
+
 [review]
 enabled = true
 monthly_usd_limit = 2.0
@@ -38,10 +92,9 @@ skip_path_patterns = ["package-lock.json", "dist/**", "out/**"]
 
 [harness_files]
 ".envrc" = "1d26c74fd25a4c3dbb09e029fc609588da499fd4af2a41c88f6316c7f8c54cf1"
-"AGENTS.md" = "48d52e7b4eeb721aa9cb680b51450faecf758688747be1be801b5fe25f5b8a9c"
+"AGENTS.md" = "64945f8f9dd4418849513c2a1f026c1336292e7045be23800fa54b93c6ac81b2"
 "CLAUDE.md" = "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49"
 "flake.nix" = "3ef39f6e6d63fee13e9737c2f9cdeeb8a8af76f197d669b2d3e0c8934d5cb310"
-
 [review.self]
 required = true
 mode = "current-agent"
