@@ -2,7 +2,7 @@
 
 この repository は note 向け Markdown preview / validation / image processing を提供する VS Code extension である。ユーザー向け UI と README の主言語は日本語。source code identifier、machine token、commit message、branch name、LICENSE は英語を維持する。
 
-ai-ops の cross-project rules を継承する。破壊的操作、環境変更、workflow / release / package publish に関わる変更、public repo への push は Propose -> Confirm -> Execute を通す。read-only command と local check は確認不要。
+tazuna の cross-project rules を継承する。破壊的操作、環境変更、workflow / release / package publish に関わる変更、public repo への push は Propose -> Confirm -> Execute を通す。read-only command と local check は確認不要。
 
 ## Workspace
 
