@@ -1,6 +1,7 @@
 ai_ops_sha = "52e1640e3d266869389b71284d63f4a2ed5c4f06"
 last_sync = "2026-05-08T19:27:43+00:00"
 workflow_tier = "C"
+branch_strategy = "trunk"
 project_type = "external"
 ci_profile = "cross-platform-app"
 
