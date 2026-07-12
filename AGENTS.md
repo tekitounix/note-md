@@ -8,7 +8,7 @@ kura registry をプロジェクト台帳の正本とし、tazuna は運用規�
 
 ## 作業場所
 
-- 正本の場所: `~/kura/github.com/tekitounix/note-md/`
+- 正本の場所: このリポジトリの Git ルート
 - 技術構成: TypeScript、VS Code 拡張、Node.js 24 LTS、npm
 - 生成物: `out/`、`dist/`、`*.vsix`
 

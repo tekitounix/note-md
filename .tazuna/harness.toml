@@ -1,5 +1,5 @@
 tazuna_sha = "f9e38bf5e5fd8b70fc31109dbf50f3bbb78f3e70"
-last_sync = "2026-07-13T05:00:00+09:00"
+last_sync = "2026-07-12T22:21:47+00:00"
 workflow_tier = "C"
 branch_strategy = "trunk"
 project_type = "external"
@@ -114,6 +114,6 @@ output = "plans/active/<slug>/reviews/"
 
 [harness_files]
 ".envrc" = "1d26c74fd25a4c3dbb09e029fc609588da499fd4af2a41c88f6316c7f8c54cf1"
-"AGENTS.md" = "2875edf7cd60562bedeb60be1e2cdc06e9e477eefe2e00d101f416f7fba2ed52"
+"AGENTS.md" = "585467a9dd820a9669f0c2e6579de14a201be8b35c15cc0c3bb3b2c9114510cd"
 "CLAUDE.md" = "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49"
 "flake.nix" = "477774a47a5b7cee8c457a20132dbcf52dc7cfe69ab15bac3a71945f28aead19"

@@ -12,7 +12,7 @@ schema_version: 1
 # v0.1.1 分岐後の全変更を監査し正しいリリース系譜へ統合する
 
 Branch: `main`
-Worktree: `/Users/tekitou/kura/github.com/tekitounix/note-md`
+Worktree: `repository root`
 Worktree Lease: `single active worktree`
 Session Carryover: `n/a`
 Execution Profile: `audit-first-cross-cutting`
@@ -71,8 +71,8 @@ TBD。
 - 検証: 単体試験、拡張機能ホスト、梱包、隔離した VSIX、履歴・木の照合。
 - 状態: adopted — 実装中。
 - tazuna_origin: not-tazuna
-- upstream_ref: v0.1.1..main semantic inventory
-- misclassification_reason: n/a
+- upstream_ref: n/a
+- misclassification_reason: tazuna 起因ではなく、製品実装と公開履歴の独立監査で見つかったため。
 
 ## Team Composition
 
