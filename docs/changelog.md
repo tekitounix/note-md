@@ -34,3 +34,4 @@
 
 - tag と package version の一致を検証する手動 Release workflow を整備
 - GitHub Release と Marketplace 公開を分離し、Marketplace 公開を明示選択制に変更
+- 分岐していた v0.1.1 の公開履歴を、内容と既存タグを変えず次版の祖先へ統合
