@@ -11,41 +11,69 @@
  */
 
 import MarkdownIt from 'markdown-it';
-import { resolveMappedImageUrl } from './imageRefs';
+import sanitizeHtml from 'sanitize-html';
+import { resolveLocalImageRef, resolveMappedImageUrl } from './imageRefs';
 import { parseFrontmatter } from './frontmatter';
 
-// ---------------------------------------------------------------------------
-// CDN asset configuration
-// Centralised here so that version bumps and URL changes are single-point edits.
-// SRI hashes must be updated in tandem with version changes.
-// ---------------------------------------------------------------------------
-
-const CDN = {
-  fontAwesomeCss: 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css',
-  fontAwesomeCssSri:
-    'sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA==',
-  highlightCss:
-    'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css',
-  highlightCssSri: 'sha384-oaMLBGEzBOJx3UHwac0cVndtX5fxGQIfnAeFZ35RTgqPcYlbprH9o9PUV/F8Le07',
-  highlightJs: 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js',
-  highlightJsSri: 'sha384-F/bZzf7p3Joyp5psL90p/p89AZJsndkSoGwRpXcZhleCWhd8SnRuoYo4d0yirjJp',
-  katexCss: 'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css',
-  katexCssSri: 'sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+',
-  katexJs: 'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js',
-  katexJsSri: 'sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg',
-  katexAutoRenderJs: 'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js',
-  katexAutoRenderJsSri: 'sha384-43gviWU0YVjaDtb/GhzOouOXtZMP/7XUzwPTstBeZFe/+rCMvRwr4yROQP43s0Xk',
-  mermaidEsm: 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs',
-} as const;
-
-/** Unique CDN origins extracted from CDN URLs — used in Content-Security-Policy. */
-const CDN_ORIGINS = [
-  ...new Set(
-    Object.values(CDN)
-      .filter((v) => v.startsWith('https://'))
-      .map((v) => new URL(v).origin),
-  ),
-].join(' ');
+const SANITIZE_OPTIONS: sanitizeHtml.IOptions = {
+  allowedTags: [
+    'a',
+    'b',
+    'blockquote',
+    'br',
+    'cite',
+    'code',
+    'del',
+    'div',
+    'em',
+    'footer',
+    'h1',
+    'h2',
+    'h3',
+    'h4',
+    'h5',
+    'h6',
+    'hr',
+    'i',
+    'img',
+    'li',
+    'mark',
+    'ol',
+    'p',
+    'pre',
+    'rp',
+    'rt',
+    'ruby',
+    's',
+    'span',
+    'strong',
+    'sub',
+    'sup',
+    'u',
+    'ul',
+  ],
+  allowedAttributes: {
+    '*': ['class', 'data-source-line', 'id'],
+    a: ['href', 'rel', 'target', 'title'],
+    blockquote: ['style'],
+    cite: ['style'],
+    div: ['style'],
+    footer: ['style'],
+    img: ['alt', 'height', 'src', 'title', 'width'],
+    p: ['style'],
+    span: ['style'],
+  },
+  allowedSchemes: ['http', 'https', 'mailto'],
+  allowedSchemesByTag: {
+    img: ['http', 'https', 'data'],
+  },
+  allowedStyles: {
+    '*': {
+      'text-align': [/^(left|right|center)$/],
+    },
+  },
+  disallowedTagsMode: 'discard',
+};
 
 // ---------------------------------------------------------------------------
 // markdown-it setup
@@ -56,11 +84,15 @@ md.disable('table');
 
 // Add IDs to all headings (needed for TOC links & scroll spy)
 md.core.ruler.push('heading_ids', (state) => {
+  const slugCounts = new Map<string, number>();
   for (let i = 0; i < state.tokens.length; i++) {
     if (state.tokens[i].type === 'heading_open') {
       const inline = state.tokens[i + 1];
       if (inline?.type === 'inline') {
-        state.tokens[i].attrSet('id', slugify(inline.content));
+        const baseSlug = slugify(inline.content) || 'section';
+        const count = (slugCounts.get(baseSlug) ?? 0) + 1;
+        slugCounts.set(baseSlug, count);
+        state.tokens[i].attrSet('id', count === 1 ? baseSlug : `${baseSlug}-${count}`);
       }
     }
   }
@@ -68,9 +100,10 @@ md.core.ruler.push('heading_ids', (state) => {
 
 // Add data-source-line to block elements (for diagnostic annotation)
 md.core.ruler.push('source_map', (state) => {
+  const lineOffset = Number((state.env as { lineOffset?: number }).lineOffset ?? 0);
   for (const token of state.tokens) {
     if (token.map && token.nesting >= 0) {
-      token.attrSet('data-source-line', String(token.map[0]));
+      token.attrSet('data-source-line', String(token.map[0] + lineOffset));
     }
   }
 });
@@ -162,22 +195,40 @@ function escHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
+function sanitizeRenderedHtml(html: string): string {
+  return sanitizeHtml(html, SANITIZE_OPTIONS);
+}
+
+function encodeWebviewPath(sourceRef: string): string {
+  return sourceRef.split('/').map(encodeURIComponent).join('/');
+}
+
 /**
  * Resolve image src attributes — prefer uploaded URL from urlMap,
  * fall back to baseUri for local preview.
  */
-function resolveImageSrcs(html: string, urlMap?: Record<string, string>, baseUri?: string): string {
+function resolveImageSrcs(
+  html: string,
+  urlMap?: Record<string, string>,
+  baseUri?: string,
+  articleDir?: string,
+): string {
   return html.replace(/src="(?!https?:|data:|#)([^"]+)"/g, (_match, src: string) => {
     // Normalize backslashes for Windows paths in Markdown (e.g. images\photo.png)
     const normalizedSrc = src.replace(/\\/g, '/');
-    const mapped = resolveMappedImageUrl(urlMap, normalizedSrc);
+    const resolved = articleDir ? resolveLocalImageRef(articleDir, normalizedSrc) : null;
+    const sourceRef = resolved?.sourceRef ?? normalizedSrc.replace(/^(?:\.\/)+/, '');
+    const mapped = resolveMappedImageUrl(urlMap, sourceRef);
     // Always preserve original relative path so resolveBodyImages can re-resolve
     // after url-map-updated arrives (e.g. TIFF/WebP converted async).
-    const dataSrc = ` data-original-src="${normalizedSrc}"`;
-    if (mapped) return `src="${mapped}"${dataSrc}`;
+    const dataSrc = ` data-original-src="${escHtml(sourceRef)}"`;
+    if (mapped) return `src="${escHtml(mapped)}"${dataSrc}`;
     // Fall back to local webview URI
-    if (baseUri) return `src="${baseUri}/${encodeURI(normalizedSrc)}"${dataSrc}`;
-    return `src="${normalizedSrc}"${dataSrc}`;
+    if (baseUri && resolved?.exists) {
+      return `src="${baseUri}/${encodeWebviewPath(resolved.sourceRef)}"${dataSrc}`;
+    }
+    if (baseUri && articleDir) return `src=""${dataSrc}`;
+    return `src="${escHtml(normalizedSrc)}"${dataSrc}`;
   });
 }
 
@@ -317,8 +368,14 @@ export interface RenderOptions {
   cspSource?: string;
   /** Base URI for local resource resolution */
   baseUri?: string;
+  /** Base URI containing bundled Webview JavaScript, CSS, and fonts */
+  assetBaseUri?: string;
+  /** Article directory used to enforce local image boundaries */
+  articleDir?: string;
   /** Generation counter for stale-message rejection in Webview */
   generation?: number;
+  /** Capability token required for Webview→Extension messages */
+  messageToken?: string;
 }
 
 /** Shared render pipeline — transforms raw markdown into processed content. */
@@ -334,16 +391,17 @@ function renderContent(
   headerImagePath?: string;
 } {
   // Parse frontmatter (e.g. header image) and strip it before rendering
-  const { data: frontmatter, content: markdownBody } = parseFrontmatter(markdown);
-  let body = md.render(markdownBody);
+  const { data: frontmatter, content: markdownBody, lineCount } = parseFrontmatter(markdown);
+  let body = md.render(markdownBody, { lineOffset: lineCount });
+  body = sanitizeRenderedHtml(body);
 
   // Convert mermaid code blocks to renderable divs (before inline code strip)
   body = body.replace(
     /<pre[^>]*><code[^>]*class="language-mermaid"[^>]*>([\s\S]*?)<\/code><\/pre>/g,
     (_m, content: string) => {
       const decoded = content.replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&amp;/g, '&');
-      const escaped = decoded.replace(/"/g, '&quot;');
-      return `<div class="mermaid" data-original="${escaped}">${decoded}</div>`;
+      const escaped = escHtml(decoded);
+      return `<div class="mermaid" data-original="${escaped}">${escaped}</div>`;
     },
   );
 
@@ -362,7 +420,7 @@ function renderContent(
 
   // Resolve local image paths — use uploaded URL from urlMap when available,
   // otherwise fall back to webview URI.
-  body = resolveImageSrcs(body, opts?.urlMap, opts?.baseUri);
+  body = resolveImageSrcs(body, opts?.urlMap, opts?.baseUri, opts?.articleDir);
 
   body = stripBlockGaps(body);
 
@@ -376,8 +434,13 @@ function renderContent(
     const mapped = resolveMappedImageUrl(opts?.urlMap, headerImagePath);
     if (mapped) {
       headerImagePath = mapped;
+    } else if (opts?.baseUri && opts.articleDir) {
+      const resolved = resolveLocalImageRef(opts.articleDir, headerImagePath);
+      headerImagePath = resolved?.exists
+        ? `${opts.baseUri}/${encodeWebviewPath(resolved.sourceRef)}`
+        : undefined;
     } else if (opts?.baseUri) {
-      headerImagePath = `${opts.baseUri}/${headerImagePath}`;
+      headerImagePath = `${opts.baseUri}/${encodeWebviewPath(headerImagePath.replace(/\\/g, '/'))}`;
     }
   }
 
@@ -405,6 +468,7 @@ export function renderPreview(markdown: string, opts?: RenderOptions): string {
 
   const nonce = opts?.nonce ?? '';
   const cspSource = opts?.cspSource ?? '';
+  const messageToken = opts?.messageToken ?? '';
 
   return buildPage(
     escHtml(title),
@@ -416,6 +480,8 @@ export function renderPreview(markdown: string, opts?: RenderOptions): string {
     cspSource,
     opts?.generation,
     charCount,
+    messageToken,
+    opts?.assetBaseUri,
   );
 }
 
@@ -465,42 +531,44 @@ function buildPage(
   cspSource: string,
   generation?: number,
   charCount?: number,
+  messageToken?: string,
+  assetBaseUri?: string,
 ): string {
   const isWebview = nonce !== '';
   const nonceAttr = isWebview ? ` nonce="${nonce}"` : '';
+  const messageTokenJson = JSON.stringify(messageToken ?? '').replace(/</g, '\\u003c');
   const cspMeta = isWebview
-    ? `\n  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} ${CDN_ORIGINS} 'unsafe-inline'; script-src 'nonce-${nonce}' ${CDN_ORIGINS}; img-src ${cspSource} https: data:; font-src ${CDN_ORIGINS}; worker-src blob:;">`
+    ? `\n  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src ${cspSource} 'nonce-${nonce}'; img-src ${cspSource} https: data:; font-src ${cspSource}; worker-src blob:;">`
     : '';
+  const assetTags = assetBaseUri
+    ? `\n  <link rel="stylesheet" href="${escHtml(assetBaseUri)}/highlight.css" />\n  <link rel="stylesheet" href="${escHtml(assetBaseUri)}/katex.css" />`
+    : '';
+  const vendorScript = assetBaseUri
+    ? `\n  <script${nonceAttr} src="${escHtml(assetBaseUri)}/webview-vendor.js"></script>`
+    : '';
+  const mermaidScript =
+    assetBaseUri && body.includes('class="mermaid"')
+      ? `\n  <script${nonceAttr} src="${escHtml(assetBaseUri)}/webview-mermaid.js"></script>`
+      : '';
 
   return `<!doctype html>
 <html lang="ja">
 <head>
   <meta charset="utf-8">${cspMeta}
   <title>${titleEsc || 'note プレビュー'}</title>
-  <link rel="stylesheet" href="${CDN.fontAwesomeCss}"
-        integrity="${CDN.fontAwesomeCssSri}"
-        crossorigin="anonymous" referrerpolicy="no-referrer" />
-  <link rel="stylesheet"
-        href="${CDN.highlightCss}"
-        integrity="${CDN.highlightCssSri}"
-        crossorigin="anonymous" />
-  <link rel="stylesheet"
-        href="${CDN.katexCss}"
-        integrity="${CDN.katexCssSri}"
-        crossorigin="anonymous" />
+  ${assetTags}
   <style${nonceAttr}>
 ${CSS}
   </style>
 </head>
 <body>
   <div class="toolbar">
-    <button class="tool-btn copy-btn" id="copy-title-btn" data-tooltip="タイトルをコピー"><i class="fa-solid fa-heading"></i> タイトル</button>
-    <button class="tool-btn copy-btn" id="copy-body-btn" data-tooltip="note.com用HTMLをコピー"${isWebview ? ' disabled' : ''}><i class="fa-solid fa-copy"></i> 本文コピー</button>
+    <button class="tool-btn copy-btn" id="copy-title-btn" data-tooltip="タイトルをコピー">見出し&nbsp; タイトル</button>
+    <button class="tool-btn copy-btn" id="copy-body-btn" data-tooltip="note.com用HTMLをコピー"${isWebview ? ' disabled' : ''}>複製&nbsp; 本文コピー</button>
     <span id="upload-status" class="upload-status"></span>
     <div class="divider"${isWebview ? '' : ' style="display:none"'}></div>
-    <button class="tool-btn icon-only" id="force-upload-btn" data-tooltip="画像を強制再アップロード"${isWebview ? '' : ' style="display:none"'}><i class="fa-solid fa-arrows-rotate"></i></button>
-    <button class="tool-btn icon-only" id="open-browser-btn" data-tooltip="ブラウザで開く"${isWebview ? '' : ' style="display:none"'}><i class="fa-solid fa-up-right-from-square"></i></button>
-    <button class="tool-btn icon-only" id="open-cheatsheet-btn" data-tooltip="書式リファレンス"${isWebview ? '' : ' style="display:none"'}><i class="fa-solid fa-circle-question"></i></button>
+    <button class="tool-btn icon-only" id="force-upload-btn" aria-label="画像を強制再アップロード" data-tooltip="画像を強制再アップロード"${isWebview ? '' : ' style="display:none"'}>↻</button>
+    <button class="tool-btn icon-only" id="open-cheatsheet-btn" aria-label="書式リファレンス" data-tooltip="書式リファレンス"${isWebview ? '' : ' style="display:none"'}>?</button>
     <div class="divider"></div>
     <div class="font-toggle">
       <button id="font-gothic" class="active">ゴシック</button>
@@ -524,25 +592,9 @@ ${body}
   <script${nonceAttr}>
     window.__urlMap = ${urlMapJson};
     window.__gen = ${generation ?? 0};
+    window.__messageToken = ${messageTokenJson};
   </script>
-  <script${nonceAttr} src="${CDN.highlightJs}"
-          integrity="${CDN.highlightJsSri}"
-          crossorigin="anonymous"></script>
-  <script${nonceAttr} src="${CDN.katexJs}"
-          integrity="${CDN.katexJsSri}"
-          crossorigin="anonymous"></script>
-  <script${nonceAttr} src="${CDN.katexAutoRenderJs}"
-          integrity="${CDN.katexAutoRenderJsSri}"
-          crossorigin="anonymous"></script>
-  <script${nonceAttr} type="module">
-    import mermaid from '${CDN.mermaidEsm}';
-    mermaid.initialize({
-      startOnLoad: true,
-      theme: 'default',
-      securityLevel: 'strict',
-    });
-    window.__mermaid = mermaid;
-  </script>
+  ${vendorScript}${mermaidScript}
   <script${nonceAttr}>
     // Wait for KaTeX to load, then render math
     document.addEventListener('DOMContentLoaded', function() {
@@ -556,18 +608,6 @@ ${body}
         });
       }
     });
-    // Fallback: try after a short delay for CDN loading
-    setTimeout(function() {
-      if (typeof renderMathInElement === 'function') {
-        renderMathInElement(document.querySelector('.note-body'), {
-          delimiters: [
-            { left: '$$\u007b', right: '}$$', display: false },
-            { left: '$$', right: '$$', display: true }
-          ],
-          throwOnError: false
-        });
-      }
-    }, 1000);
   </script>
   <script${nonceAttr}>
 ${JS}
@@ -653,7 +693,6 @@ const CSS = `
       padding: 4px 8px; border-radius: 4px; white-space: nowrap;
       pointer-events: none; z-index: 100;
     }
-    .tool-btn i { font-size: 14px; }
     .tool-btn.copy-btn { color: #e8913a; }
     .tool-btn.copy-btn:hover { background: rgba(232,145,58,0.12); color: #f0a858; }
     .tool-btn.copy-btn:disabled { color: rgba(232,145,58,0.3); cursor: not-allowed; }
@@ -950,6 +989,15 @@ const JS = `
     // VS Code Webview API (guard for browser preview)
     const vscode = (typeof acquireVsCodeApi === 'function') ? acquireVsCodeApi() : null;
 
+    function postToExtension(type, payload) {
+      if (!vscode) return;
+      vscode.postMessage(Object.assign({
+        type,
+        gen: window.__gen,
+        token: window.__messageToken,
+      }, payload || {}));
+    }
+
     if (typeof hljs !== 'undefined') hljs.highlightAll();
 
     const statusEl = document.getElementById('status');
@@ -977,12 +1025,6 @@ const JS = `
       var keys = [normalized];
       var unsupRe = /\\.(svg|webp|bmp|tiff?)$/i;
       if (unsupRe.test(normalized)) keys.push(normalized.replace(unsupRe, '.png'));
-      var parts = normalized.split('/');
-      var name = parts[parts.length - 1] || normalized;
-      if (name !== normalized) {
-        keys.push(name);
-        if (unsupRe.test(name)) keys.push(name.replace(unsupRe, '.png'));
-      }
       for (var i = 0; i < keys.length; i++) {
         if (urlMap[keys[i]]) return urlMap[keys[i]];
       }
@@ -1008,13 +1050,6 @@ const JS = `
       // Accept messages without gen, or matching current gen
       if (msg.gen !== undefined && msg.gen !== window.__gen) return;
       switch (msg.type) {
-        case 'copy-result':
-          if (msg.ok) {
-            showStatus('\\u2713 ' + (msg.label || '') + ' をコピーしました', true);
-          } else {
-            showStatus('\\u2717 コピー失敗', false);
-          }
-          break;
         case 'upload-started':
           uploadStatusEl.textContent = '画像処理中...';
           uploadStatusEl.className = 'upload-status uploading';
@@ -1023,7 +1058,7 @@ const JS = `
         case 'upload-failed':
           uploadStatusEl.textContent = '処理失敗';
           uploadStatusEl.className = 'upload-status error';
-          document.getElementById('copy-body-btn').disabled = false;
+          document.getElementById('copy-body-btn').disabled = true;
           break;
         case 'url-map-updated':
           window.__urlMap = msg.urlMap;
@@ -1218,17 +1253,12 @@ const JS = `
 
     /* Force upload button */
     document.getElementById('force-upload-btn').addEventListener('click', () => {
-      if (vscode) vscode.postMessage({ type: 'force-upload' });
-    });
-
-    /* Open in browser button */
-    document.getElementById('open-browser-btn').addEventListener('click', () => {
-      if (vscode) vscode.postMessage({ type: 'open-in-browser' });
+      postToExtension('force-upload');
     });
 
     /* Open cheatsheet button */
     document.getElementById('open-cheatsheet-btn').addEventListener('click', () => {
-      if (vscode) vscode.postMessage({ type: 'open-cheatsheet' });
+      postToExtension('open-cheatsheet');
     });
 
     /* Copy button starts disabled; enabled only when Extension
@@ -1307,5 +1337,5 @@ const JS = `
     }, { passive: true });
 
     // Notify extension host that Webview JS is ready
-    if (vscode) vscode.postMessage({ type: 'webview-ready' });
-`;
+    postToExtension('webview-ready');
+  `;

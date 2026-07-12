@@ -1,6 +1,14 @@
 {
   "files.exclude": {
+    "**/.vscode-test": true,
+    "**/dist": true,
+    "**/node_modules": true,
+    "**/out": true,
     "**/.vscode": true,
+    ".vscode-test": true,
+    "dist": true,
+    "node_modules": true,
+    "out": true,
     ".vscode": true
   }
 }

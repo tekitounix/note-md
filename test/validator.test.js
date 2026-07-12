@@ -1,6 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { Buffer } = require('node:buffer');
 const Module = require('node:module');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 // ─── vscode module mock ─────────────────────────────────────────
 const originalLoad = Module._load;
@@ -25,13 +29,31 @@ Module._load = function (request, parent, isMain) {
   return originalLoad.call(this, request, parent, isMain);
 };
 
-const { validate } = require('../out/validator.js');
+const { validate, validateAsync } = require('../out/validator.js');
 
 // ─── Helpers ────────────────────────────────────────────────────
 
 /** Return only diagnostics matching the given rule ID. */
 function findByRule(diagnostics, ruleId) {
   return diagnostics.filter((d) => d.ruleId === ruleId);
+}
+
+function offsetAt(text, line, column) {
+  const lines = text.split('\n');
+  let offset = 0;
+  for (let i = 0; i < line; i++) offset += lines[i].length + 1;
+  return offset + column;
+}
+
+function applyFirstFix(text, diagnostic) {
+  const edit = diagnostic.fixes[0].edits[0];
+  const start = offsetAt(text, edit.range.line, edit.range.column);
+  const end = offsetAt(
+    text,
+    edit.range.endLine ?? edit.range.line,
+    edit.range.endColumn ?? edit.range.column + edit.range.length,
+  );
+  return text.slice(0, start) + edit.newText + text.slice(end);
 }
 
 // =====================================================================
@@ -45,6 +67,11 @@ test('note/no-table: detects pipe table (header + separator)', () => {
   const diags = findByRule(validate(text, 'change'), 'note/no-table');
   assert.equal(diags.length, 1);
   assert.equal(diags[0].range.line, 0);
+});
+
+test('note/no-table: detects a table without leading pipes', () => {
+  const results = validate('A | B\n--- | ---', 'change');
+  assert.ok(findByRule(results, 'note/no-table').length > 0);
 });
 
 test('note/no-table: no false positive on single pipe line', () => {
@@ -226,6 +253,26 @@ test('note/no-image-title: provides quickfix to remove title', () => {
   assert.equal(diags[0].fixes[0].edits[0].newText, '');
 });
 
+test('note/image-alt-empty: suggests alternative text and supports explicit ignore', () => {
+  assert.ok(findByRule(validate('![](image.png)', 'change'), 'note/image-alt-empty').length > 0);
+  assert.ok(
+    findByRule(
+      validate('<!-- note-ignore-next-line -->\n![](image.png)', 'change'),
+      'note/image-alt-empty',
+    ).length === 0,
+  );
+});
+
+test('image rules support angle-bracket spaces and reference-style images', () => {
+  const markdown = [
+    '![space](<missing image.png>)',
+    '![ref][image]',
+    '[image]: missing-ref.png',
+  ].join('\n');
+  const results = validate(markdown, 'save', process.cwd());
+  assert.equal(results.filter((result) => result.ruleId === 'note/image-missing').length, 2);
+});
+
 // =====================================================================
 // 4.2 Custom extension validation
 // =====================================================================
@@ -309,7 +356,7 @@ test('note/image-path-traversal: detects ../ in image path', () => {
   const text = '![alt](../images/pic.png)';
   const diags = findByRule(validate(text, 'change'), 'note/image-path-traversal');
   assert.equal(diags.length, 1);
-  assert.ok(diags[0].message.includes('..'));
+  assert.ok(diags[0].message.includes('記事ディレクトリ'));
 });
 
 test('note/image-path-traversal: no error for relative path without traversal', () => {
@@ -322,6 +369,46 @@ test('note/image-path-traversal: no error for URL images', () => {
   const text = '![alt](https://example.com/pic.png)';
   const diags = findByRule(validate(text, 'change'), 'note/image-path-traversal');
   assert.equal(diags.length, 0);
+});
+
+test('note/image-path-traversal: does NOT flag filenames containing two dots', () => {
+  const text = '![alt](images/foo..bar.png)';
+  const diags = findByRule(validate(text, 'change'), 'note/image-path-traversal');
+  assert.equal(diags.length, 0);
+});
+
+test('note/image-path-traversal: detects absolute path outside articleDir', () => {
+  const articleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'note-md-validator-'));
+  try {
+    const text = `![alt](${path.join(os.tmpdir(), 'outside.png')})`;
+    const diags = findByRule(validate(text, 'change', articleDir), 'note/image-path-traversal');
+    assert.equal(diags.length, 1);
+  } finally {
+    fs.rmSync(articleDir, { recursive: true, force: true });
+  }
+});
+
+test('note/image-path-traversal: detects symlink escaping articleDir when resolvable', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'note-md-validator-'));
+  const articleDir = path.join(root, 'article');
+  const outside = path.join(root, 'outside.png');
+  fs.mkdirSync(articleDir);
+  fs.writeFileSync(outside, 'x');
+  try {
+    fs.symlinkSync(outside, path.join(articleDir, 'link.png'));
+  } catch (err) {
+    if (err && ['EPERM', 'EACCES'].includes(err.code)) return;
+    throw err;
+  }
+  try {
+    const diags = findByRule(
+      validate('![alt](link.png)', 'change', articleDir),
+      'note/image-path-traversal',
+    );
+    assert.equal(diags.length, 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 // =====================================================================
@@ -427,6 +514,14 @@ test('note/consecutive-blanks: detects at end of file', () => {
   assert.equal(diags.length, 1);
 });
 
+test('note/consecutive-blanks: quickfix removes extra blank lines', () => {
+  const text = 'text\n\n\n\nmore text';
+  const diags = findByRule(validate(text, 'change'), 'note/consecutive-blanks');
+  assert.equal(diags.length, 1);
+  assert.ok(diags[0].fixes);
+  assert.equal(applyFirstFix(text, diags[0]), 'text\n\n\nmore text');
+});
+
 // =====================================================================
 // Preprocessing and protection system
 // =====================================================================
@@ -445,6 +540,14 @@ test('rules do NOT fire inside fenced code blocks (tilde)', () => {
   const diags = validate(text, 'change');
   assert.equal(findByRule(diags, 'note/no-h456').length, 0);
   assert.equal(findByRule(diags, 'note/no-italic').length, 0);
+});
+
+test('fenced blocks allow three-space indentation and require a matching closing length', () => {
+  const protectedResults = validate('   ````\n*not italic*\n   ````', 'change');
+  assert.equal(findByRule(protectedResults, 'note/no-italic').length, 0);
+
+  const unclosedResults = validate('````\n*italic*\n```', 'change');
+  assert.ok(findByRule(unclosedResults, 'note/no-italic').length > 0);
 });
 
 test('rules do NOT fire inside display math blocks', () => {
@@ -545,6 +648,33 @@ test('save trigger also runs change-trigger rules', () => {
   const text = '#### heading';
   const diags = findByRule(validate(text, 'save'), 'note/no-h456');
   assert.equal(diags.length, 1);
+});
+
+test('validateAsync runs image-missing, image-oversized, and image-unsupported checks', async () => {
+  const articleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'note-md-validator-'));
+  try {
+    fs.writeFileSync(path.join(articleDir, 'oversized.png'), Buffer.alloc(20 * 1024 * 1024 + 1));
+    fs.writeFileSync(
+      path.join(articleDir, 'diagram.svg'),
+      '<svg xmlns="http://www.w3.org/2000/svg"/>',
+    );
+    const text = [
+      '![missing](missing.png)',
+      '![big](oversized.png)',
+      '![svg](diagram.svg)',
+      '![remote](https://example.com/missing.png)',
+    ].join('\n');
+
+    const diags = await validateAsync(text, articleDir);
+    assert.equal(findByRule(diags, 'note/image-missing').length, 1);
+    assert.equal(findByRule(diags, 'note/image-oversized').length, 1);
+    assert.equal(findByRule(diags, 'note/image-unsupported').length, 1);
+
+    const disabled = await validateAsync(text, articleDir, ['note/image-oversized']);
+    assert.equal(findByRule(disabled, 'note/image-oversized').length, 0);
+  } finally {
+    fs.rmSync(articleDir, { recursive: true, force: true });
+  }
 });
 
 // =====================================================================

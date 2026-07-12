@@ -7,58 +7,126 @@ on:
         description: "Release tag to package, e.g. v0.1.0"
         required: true
         type: string
+      publish_marketplace:
+        description: "Publish the packaged VSIX to VS Code Marketplace"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
-  contents: write
+  contents: read
+
+defaults:
+  run:
+    working-directory: note-md
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      vsix_name: ${{ steps.version.outputs.vsix_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
+          path: note-md
           ref: ${{ inputs.tag }}
-      - uses: actions/setup-node@v4
+          persist-credentials: false
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm run compile
-      - run: npm test
-      - run: npm run package
+          cache-dependency-path: note-md/package-lock.json
+      - run: sudo apt-get update && sudo apt-get install -y xvfb
+        working-directory: .
+      - run: ./scripts/check.sh
 
-      - name: Get version from tag
+      - name: Validate tag and package version
         id: version
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
-          tag="${{ inputs.tag }}"
-          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must look like v0.1.0 or v0.1.0-beta.1" >&2
+            exit 1
+          fi
+
+          version="${TAG#v}"
+          package_version="$(node -p "require('./package.json').version")"
+          if [[ "$package_version" != "$version" ]]; then
+            echo "package.json version ($package_version) does not match tag ($version)" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "vsix_name=note-md-$version.vsix" >> "$GITHUB_OUTPUT"
+
+      - name: Extract release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          awk -v version="$VERSION" '
+            $1 == "##" && $2 == version { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+            END { if (!found) exit 1 }
+          ' docs/changelog.md > release-notes.md
+          test -s release-notes.md
 
       - name: Package vsix
-        run: npx vsce package -o note-md-${{ steps.version.outputs.version }}.vsix
+        run: npx --no-install vsce package -o "${{ steps.version.outputs.vsix_name }}"
+
+      - name: Upload packaged vsix
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.version.outputs.vsix_name }}
+          path: note-md/${{ steps.version.outputs.vsix_name }}
+          if-no-files-found: error
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: note-md-${{ steps.version.outputs.version }}.vsix
-          generate_release_notes: true
-          prerelease: ${{ contains(github.ref, 'beta') || startsWith(steps.version.outputs.version, '0.') }}
+          tag_name: ${{ inputs.tag }}
+          files: note-md/${{ steps.version.outputs.vsix_name }}
+          body_path: note-md/release-notes.md
+          generate_release_notes: false
+          prerelease: ${{ contains(steps.version.outputs.version, '-') || startsWith(steps.version.outputs.version, '0.') }}
 
   publish-marketplace:
+    if: ${{ inputs.publish_marketplace }}
     needs: release
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: vscode-marketplace
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
+          path: note-md
           ref: ${{ inputs.tag }}
-      - uses: actions/setup-node@v4
+          persist-credentials: false
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
+          cache-dependency-path: note-md/package-lock.json
       - run: npm ci
-      - run: npm run compile
+      - name: Download packaged vsix
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.release.outputs.vsix_name }}
+          path: note-md/release-artifacts
       - name: Publish to VS Code Marketplace
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: npx vsce publish
-        continue-on-error: true
+        run: |
+          if [[ -z "${VSCE_PAT:-}" ]]; then
+            echo "VSCE_PAT secret is required when publish_marketplace is true" >&2
+            exit 1
+          fi
+
+          npx --no-install vsce publish --packagePath "release-artifacts/${{ needs.release.outputs.vsix_name }}"

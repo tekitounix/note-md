@@ -105,6 +105,9 @@ int x = 42;
 ![代替テキスト](figures/diagram.svg)
 ```
 
+- 内容を伝える代替テキストを必ず書きます。装飾画像だけは直前の `<!-- note-ignore-next-line -->` で空 ALT の意図を明示できます
+- 空白を含む path は `![説明](<figures/my image.png>)` と書けます
+- `![説明][diagram]` と `[diagram]: figures/diagram.svg` の参照形式にも対応します
 - SVG / WebP / BMP / TIFF は画像処理時に PNG に自動変換されます
 - 本文コピー時にはアップロード済み URL に自動で差し替えられます
 - note は表示幅 620px に縮小しますが、拡大時は原寸（最大 4000px）で表示されます
@@ -160,7 +163,8 @@ graph TD;
 
 ### テキスト配置（中央寄せ・右寄せ）
 
-Raw HTML として記述します。
+生 HTML として記述します。
+プレビューと本文コピーでは安全のため HTML を許可リストで整形し、スクリプト、埋め込みフレーム、イベント属性、危険な URL 形式は除去します。
 
 ```html
 <p style="text-align:center">中央寄せのテキスト</p>
@@ -209,11 +213,11 @@ Markdown のインラインコード（`` `counter` ``）は note では非対�
 note のエディタには画像キャプション機能がありますが、ペースト（HTML 貼り付け）経由ではキャプションを設定できません。以下のすべてのアプローチを検証しましたが、いずれも失敗しました。
 
 - `<figure>` + `<figcaption>` の標準的な構造
-- note 内部の HTML 構造（UUID 属性付き figure）
+- note 内部の HTML 構造（識別子属性を付けた画像要素）
 - note の実画像 URL を使用した figure
 - 画像直後の装飾テキスト（中央寄せ、グレー、small、em 等）
 - 画像と同一段落内のテキスト
-- blockquote / cite / footer / mark / del / u 等のタグ
+- 引用、出典、脚部、強調、削除、下線に相当する各 HTML タグ
 - data 属性・title 属性・aria-label 属性
 - table caption タグ
 - その他創造的アプローチ（上キャプション、リスト、見出し等）

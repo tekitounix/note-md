@@ -27,7 +27,7 @@ import {
   uploadWithRegistry,
   type UrlMap,
 } from './upload';
-import { parseFrontmatter } from './frontmatter';
+import { categorizeImageReferences } from './imageScanner';
 import {
   getConvertedUploadFileName,
   getUploadFileName,
@@ -43,6 +43,20 @@ const MAX_BYTES = 20 * 1024 * 1024; // 20 MB (note.com limit)
 const MIN_WIDTH = 620;
 const UPLOAD_CONCURRENCY = 2;
 const INTER_BATCH_DELAY_MS = 1000;
+const MAX_CONVERSION_CACHE_BYTES = 64 * 1024 * 1024;
+
+const conversionCache = new Map<string, Buffer>();
+let conversionCacheBytes = 0;
+
+export function resetImageProcessorCache(): void {
+  conversionCache.clear();
+  conversionCacheBytes = 0;
+  resvgInitialized = false;
+  resvgInitPromise = undefined;
+  webpInitialized = false;
+  webpInitPromise = undefined;
+  svgFontBuffers = undefined;
+}
 
 /** Formats that note.com accepts for article images. */
 const NOTE_SUPPORTED_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.heic']);
@@ -181,37 +195,7 @@ function isNoteSupported(ext: string): boolean {
  * Extract image references from markdown text.
  */
 export function extractImageRefs(markdown: string): { local: string[]; global: string[] } {
-  const local: string[] = [];
-  const global: string[] = [];
-
-  const categorize = (src: string): void => {
-    if (/^https?:\/\//.test(src) || src.startsWith('data:')) {
-      global.push(src);
-    } else {
-      local.push(src);
-    }
-  };
-
-  // Frontmatter header image (also processed through the upload pipeline)
-  const { data: frontmatter, content } = parseFrontmatter(markdown);
-  if (frontmatter.header) {
-    categorize(frontmatter.header);
-  }
-
-  // Inline images: ![alt](url) or ![alt](url "title")
-  const inlineRe = /!\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
-  let m;
-  while ((m = inlineRe.exec(content)) !== null) {
-    categorize(m[1]);
-  }
-
-  // HTML <img> tags (html: true is enabled in markdown-it)
-  const imgTagRe = /<img\s[^>]*src=["']([^"']+)["'][^>]*>/gi;
-  while ((m = imgTagRe.exec(content)) !== null) {
-    categorize(m[1]);
-  }
-
-  return { local, global };
+  return categorizeImageReferences(markdown);
 }
 
 /**
@@ -281,8 +265,12 @@ async function convertToPng(
       pngBuffer = Buffer.from(await image.getBuffer('image/png'));
     }
 
-    if (pngBuffer.length <= MAX_BYTES || currentWidth <= MIN_WIDTH) {
+    if (pngBuffer.length <= MAX_BYTES) {
       return pngBuffer;
+    }
+
+    if (currentWidth <= MIN_WIDTH) {
+      throw new Error('PNG 変換後も 20MB を超えています');
     }
 
     currentWidth = Math.max(Math.floor(currentWidth * 0.9), MIN_WIDTH);
@@ -296,7 +284,7 @@ async function convertToPng(
 /** A single image ready for upload — may be the original or a converted copy. */
 interface PreparedImage {
   /** Original source ref in the markdown document */
-  sourceRef: string;
+  sourceRefs: string[];
   /** Name to use when uploading (& as URL map key) */
   uploadName: string;
   /** The image data (read into memory) */
@@ -344,9 +332,25 @@ export async function processImages(
       // Phase 1: prepare images (convert if needed)
       progress.report({ message: '画像を解析中...' });
       const prepared: PreparedImage[] = [];
+      const preparedByHash = new Map<string, PreparedImage>();
 
-      for (const imgRef of refs.local) {
-        if (token.isCancellationRequested) break;
+      const addPrepared = (image: PreparedImage): void => {
+        const dataHash = sha256(image.data);
+        const existing = preparedByHash.get(dataHash);
+        if (existing) {
+          for (const sourceRef of image.sourceRefs) {
+            if (!existing.sourceRefs.includes(sourceRef)) existing.sourceRefs.push(sourceRef);
+          }
+          return;
+        }
+        preparedByHash.set(dataHash, image);
+        prepared.push(image);
+      };
+
+      for (const imgRef of [...new Set(refs.local)]) {
+        if (token.isCancellationRequested) {
+          throw new Error('画像処理をキャンセルしました');
+        }
         const resolved = await resolveLocalImageRefAsync(articleDir, imgRef);
         if (!resolved || !resolved.exists) {
           skippedCount++;
@@ -359,9 +363,16 @@ export async function processImages(
         const srcBuffer = await fs.readFile(imgPath);
 
         if (isNoteSupported(ext)) {
+          if (srcBuffer.length > MAX_BYTES) {
+            failedCount++;
+            vscode.window.showErrorMessage(
+              `画像ファイルが 20MB を超えています: ${path.basename(imgPath)}`,
+            );
+            continue;
+          }
           // Supported format — use as-is
-          prepared.push({
-            sourceRef,
+          addPrepared({
+            sourceRefs: [sourceRef],
             uploadName: getUploadFileName(imgPath),
             data: srcBuffer,
             converted: false,
@@ -370,23 +381,30 @@ export async function processImages(
           // Unsupported format — convert to PNG
           const pngName = getConvertedUploadFileName(imgPath);
 
-          // Check if source is already in registry (skip conversion too)
           const srcHash = sha256(srcBuffer);
-          const existing = registry[srcHash];
-          if (existing && !force) {
-            urlMap[sourceRef] = existing.url;
-            rememberSourceRef(existing, sourceRef);
-            cachedCount++;
-            continue; // Skip conversion + upload entirely
-          }
 
           try {
             progress.report({
               message: `変換中: ${path.basename(imgPath)} → PNG`,
             });
-            const pngBuffer = await convertToPng(srcBuffer, ext, extensionPath ?? '');
-            prepared.push({
-              sourceRef,
+            const cacheKey = `png-v1:${ext}:${srcHash}`;
+            let pngBuffer = conversionCache.get(cacheKey);
+            if (!pngBuffer) {
+              pngBuffer = await convertToPng(srcBuffer, ext, extensionPath ?? '');
+              if (pngBuffer.length <= MAX_CONVERSION_CACHE_BYTES) {
+                conversionCache.set(cacheKey, pngBuffer);
+                conversionCacheBytes += pngBuffer.length;
+              }
+              while (conversionCacheBytes > MAX_CONVERSION_CACHE_BYTES) {
+                const oldestKey = conversionCache.keys().next().value;
+                if (!oldestKey) break;
+                const oldest = conversionCache.get(oldestKey);
+                conversionCache.delete(oldestKey);
+                conversionCacheBytes -= oldest?.length ?? 0;
+              }
+            }
+            addPrepared({
+              sourceRefs: [sourceRef],
               uploadName: pngName,
               data: pngBuffer,
               converted: true,
@@ -403,7 +421,9 @@ export async function processImages(
       const totalUploads = prepared.length;
 
       for (let batchStart = 0; batchStart < prepared.length; batchStart += UPLOAD_CONCURRENCY) {
-        if (token.isCancellationRequested) break;
+        if (token.isCancellationRequested) {
+          throw new Error('画像処理をキャンセルしました');
+        }
 
         const batch = prepared.slice(batchStart, batchStart + UPLOAD_CONCURRENCY);
 
@@ -417,7 +437,7 @@ export async function processImages(
             const result = await uploadWithRegistry(
               img.data,
               img.uploadName,
-              img.sourceRef,
+              img.sourceRefs[0],
               registry,
               expiry,
               force,
@@ -429,7 +449,11 @@ export async function processImages(
         for (const r of results) {
           if (r.status === 'fulfilled') {
             const { img, result } = r.value;
-            urlMap[img.sourceRef] = result.url;
+            const entry = registry[result.sha256];
+            for (const sourceRef of img.sourceRefs) {
+              urlMap[sourceRef] = result.url;
+              if (entry) rememberSourceRef(entry, sourceRef);
+            }
             if (result.serviceName) usedServices.add(result.serviceName);
             if (result.cached) {
               cachedCount++;
@@ -453,13 +477,21 @@ export async function processImages(
       // Phase 3: save registry & report
       saveRegistry(articleDir, registry);
 
-      const converted = prepared.filter((p) => p.converted).length;
+      const converted = prepared
+        .filter((p) => p.converted)
+        .reduce((count, image) => count + image.sourceRefs.length, 0);
       const parts: string[] = [];
       if (converted > 0) parts.push(`${converted}件変換`);
       if (uploadCount > 0) parts.push(`${uploadCount}件アップロード`);
       if (cachedCount > 0) parts.push(`${cachedCount}件キャッシュ利用`);
       if (skippedCount > 0) parts.push(`${skippedCount}件スキップ`);
       if (failedCount > 0) parts.push(`${failedCount}件失敗`);
+
+      if (failedCount > 0 || skippedCount > 0) {
+        throw new Error(
+          `未処理のローカル画像があります（失敗 ${failedCount}件、スキップ ${skippedCount}件）`,
+        );
+      }
 
       const svcInfo = usedServices.size > 0 ? ` [${[...usedServices].join(', ')}]` : '';
       vscode.window.showInformationMessage(

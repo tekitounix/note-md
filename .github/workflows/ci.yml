@@ -3,17 +3,27 @@ name: CI
 on:
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: note-md
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
         with:
-          node-version: 20
+          path: note-md
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
           cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm run compile
-      - run: npm test
-      - run: npm run package
+          cache-dependency-path: note-md/package-lock.json
+      - run: sudo apt-get update && sudo apt-get install -y xvfb
+        working-directory: .
+      - run: ./scripts/check.sh

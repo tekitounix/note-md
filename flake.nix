@@ -1,7 +1,7 @@
 {
   description = "note-md VS Code extension dev shell";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
   outputs =
     { self, nixpkgs }:
@@ -9,6 +9,7 @@
       systems = [
         "aarch64-darwin"
         "aarch64-linux"
+        "x86_64-darwin"
         "x86_64-linux"
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
@@ -20,7 +21,7 @@
           pkgs.coreutils
           pkgs.git
           pkgs.jq
-          pkgs.nodejs_20
+          pkgs.nodejs_24
           pkgs.ripgrep
           pkgs.shellcheck
         ];

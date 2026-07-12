@@ -1,6 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const Module = require('node:module');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const originalLoad = Module._load;
 Module._load = function (request, parent, isMain) {
@@ -192,6 +195,21 @@ test('renderBody resolves image src with urlMap', () => {
   );
 });
 
+test('renderBody keeps same-name images in different directories distinct', () => {
+  const result = renderBody(
+    ['![one](figures/photo.png)', '![two](appendix/photo.png)'].join('\n\n'),
+    {
+      urlMap: {
+        'figures/photo.png': 'https://example.com/figures-photo.png',
+        'appendix/photo.png': 'https://example.com/appendix-photo.png',
+      },
+    },
+  );
+
+  assert.match(result.bodyHtml, /src="https:\/\/example\.com\/figures-photo\.png"/);
+  assert.match(result.bodyHtml, /src="https:\/\/example\.com\/appendix-photo\.png"/);
+});
+
 test('renderBody urlMapJson contains the urlMap data', () => {
   const md = '# T\n\ntext';
   const opts = {
@@ -206,4 +224,78 @@ test('renderBody returns empty urlMapJson when no urlMap provided', () => {
   const md = '# T\n\ntext';
   const result = renderBody(md);
   assert.equal(result.urlMapJson, '{}');
+});
+
+test('renderBody sanitizes raw HTML scripts and event handlers', () => {
+  const md = '# T\n\n<script>alert(1)</script><p onclick="alert(2)">本文</p>';
+  const result = renderBody(md);
+  assert.ok(!result.bodyHtml.includes('<script'), 'script tags should be removed');
+  assert.ok(!result.bodyHtml.includes('onclick='), 'event handler attributes should be removed');
+  assert.ok(result.bodyHtml.includes('<p>本文</p>'), 'safe paragraph HTML should remain');
+});
+
+test('renderBody escapes Mermaid source instead of injecting it as HTML', () => {
+  const md = '# T\n\n```mermaid\n</div><script>alert(1)</script>\n```';
+  const result = renderBody(md);
+  assert.ok(result.bodyHtml.includes('class="mermaid"'), 'mermaid container should remain');
+  assert.ok(
+    !result.bodyHtml.includes('<script>'),
+    'mermaid source must not become executable HTML',
+  );
+  assert.ok(result.bodyHtml.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
+});
+
+test('renderBody does not resolve local images outside articleDir into webview URIs', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'note-md-render-'));
+  const articleDir = path.join(root, 'article');
+  fs.mkdirSync(articleDir);
+  try {
+    const result = renderBody('# T\n\n![x](../secret.png)', {
+      articleDir,
+      baseUri: 'vscode-resource://article',
+    });
+    assert.ok(!result.bodyHtml.includes('vscode-resource://article/../secret.png'));
+    assert.ok(result.bodyHtml.includes('src=""'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('renderPreview uses only bundled Webview assets and a narrow CSP', () => {
+  const preview = renderPreview('# Title\n\nBody', {
+    nonce: 'nonce',
+    cspSource: 'vscode-webview:',
+    assetBaseUri: 'vscode-webview://assets',
+  });
+  assert.match(preview, /vscode-webview:\/\/assets\/webview-vendor\.js/);
+  assert.ok(!preview.includes('webview-mermaid.js'));
+  assert.match(preview, /vscode-webview:\/\/assets\/katex\.css/);
+  assert.ok(!preview.includes('cdnjs.cloudflare.com'));
+  assert.ok(!preview.includes('cdn.jsdelivr.net'));
+  assert.match(preview, /script-src vscode-webview: 'nonce-nonce'/);
+});
+
+test('renderPreview loads the optional Mermaid bundle only for Mermaid articles', () => {
+  const preview = renderPreview('# Title\n\n```mermaid\ngraph TD; A-->B;\n```', {
+    nonce: 'nonce',
+    cspSource: 'vscode-webview:',
+    assetBaseUri: 'vscode-webview://assets',
+  });
+  assert.match(preview, /vscode-webview:\/\/assets\/webview-mermaid\.js/);
+});
+
+test('renderBody preserves frontmatter source lines and makes duplicate heading IDs unique', () => {
+  const markdown = [
+    '---',
+    'header: header.png',
+    '---',
+    '',
+    '# Title',
+    '',
+    '## Same',
+    '## Same',
+  ].join('\n');
+  const result = renderBody(markdown);
+  assert.match(result.bodyHtml, /id="same"[^>]*data-source-line="6"/);
+  assert.match(result.bodyHtml, /id="same-2"[^>]*data-source-line="7"/);
 });

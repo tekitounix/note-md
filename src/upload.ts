@@ -13,7 +13,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { getServiceManager } from './services';
+import { getEnabledUploadServiceNames, getServiceManager, type UploadOutcome } from './services';
 import { normalizeImageRef } from './imageRefs';
 
 const MAX_CACHE_ENTRIES = 200;
@@ -64,10 +64,12 @@ export function rememberSourceRef(entry: CacheEntry, sourceRef: string): void {
 // ---------------------------------------------------------------------------
 
 const sessionCache = new Map<string, CacheMap>();
+const inFlightUploads = new Map<string, Promise<UploadOutcome>>();
 
 /** Clear all upload caches — call from extension deactivate(). */
 export function resetUploadCache(): void {
   sessionCache.clear();
+  inFlightUploads.clear();
   urlMapSnapshots.clear();
 }
 
@@ -80,7 +82,7 @@ export function loadRegistry(articleDir: string): CacheMap {
   return cache;
 }
 
-export function saveRegistry(_articleDir: string, cache: CacheMap): void {
+export function saveRegistry(articleDir: string, cache: CacheMap): void {
   const now = Date.now();
 
   // Purge expired entries
@@ -98,6 +100,8 @@ export function saveRegistry(_articleDir: string, cache: CacheMap): void {
       delete cache[k];
     }
   }
+
+  urlMapSnapshots.delete(articleDir);
 }
 
 // ---------------------------------------------------------------------------
@@ -124,7 +128,8 @@ export async function uploadWithRegistry(
   const existing = cache[hash];
   if (existing && !force) {
     const expired = existing.expiresAt !== null && existing.expiresAt < now;
-    if (!expired) {
+    const serviceEnabled = getEnabledUploadServiceNames().has(existing.serviceName);
+    if (!expired && serviceEnabled) {
       rememberSourceRef(existing, sourceRef);
       return {
         fileName,
@@ -138,22 +143,39 @@ export async function uploadWithRegistry(
   }
 
   // Upload via ServiceManager (handles health check + fallback)
-  const mgr = getServiceManager();
-  const outcome = await mgr.upload(data, fileName, expiry);
+  const inFlightKey = `${hash}:${expiry}`;
+  let uploadPromise = inFlightUploads.get(inFlightKey);
+  if (!uploadPromise) {
+    uploadPromise = getServiceManager().upload(data, fileName, expiry);
+    inFlightUploads.set(inFlightKey, uploadPromise);
+  }
+  let outcome: UploadOutcome;
+  try {
+    outcome = await uploadPromise;
+  } finally {
+    if (inFlightUploads.get(inFlightKey) === uploadPromise) {
+      inFlightUploads.delete(inFlightKey);
+    }
+  }
 
-  cache[hash] = {
-    url: outcome.url,
-    sourceRefs: [normalizeImageRef(sourceRef)],
-    uploadedAt: now,
-    expiresAt: outcome.expiresAt,
-    serviceName: outcome.serviceName,
-  };
+  const sharedEntry = cache[hash];
+  if (sharedEntry?.url === outcome.url) {
+    rememberSourceRef(sharedEntry, sourceRef);
+  } else {
+    cache[hash] = {
+      url: outcome.url,
+      sourceRefs: [normalizeImageRef(sourceRef)],
+      uploadedAt: now,
+      expiresAt: outcome.expiresAt,
+      serviceName: outcome.serviceName,
+    };
+  }
 
   return {
     fileName,
     url: outcome.url,
     sha256: hash,
-    cached: false,
+    cached: sharedEntry?.url === outcome.url,
     serviceName: outcome.serviceName,
   };
 }

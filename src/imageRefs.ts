@@ -11,7 +11,13 @@ export interface LocalImageRefInfo {
 }
 
 export function normalizeImageRef(src: string): string {
-  const normalized = path.posix.normalize(src.replace(/\\/g, '/'));
+  let decoded = src;
+  try {
+    decoded = decodeURIComponent(src);
+  } catch {
+    // Invalid percent escapes are treated as literal filename characters.
+  }
+  const normalized = path.posix.normalize(decoded.replace(/\\/g, '/'));
   return normalized.replace(/^(?:\.\/)+/, '');
 }
 
@@ -76,14 +82,6 @@ export function resolveMappedImageUrl(
   const keys: string[] = [normalized];
   if (UNSUPPORTED_IMAGE_EXT_RE.test(normalized)) {
     keys.push(normalized.replace(UNSUPPORTED_IMAGE_EXT_RE, '.png'));
-  }
-
-  const baseName = path.posix.basename(normalized);
-  if (baseName !== normalized) {
-    keys.push(baseName);
-    if (UNSUPPORTED_IMAGE_EXT_RE.test(baseName)) {
-      keys.push(baseName.replace(UNSUPPORTED_IMAGE_EXT_RE, '.png'));
-    }
   }
 
   for (const key of keys) {

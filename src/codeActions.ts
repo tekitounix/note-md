@@ -37,8 +37,8 @@ export class NoteCodeActionProvider implements vscode.CodeActionProvider {
             new vscode.Range(
               e.range.line,
               e.range.column,
-              e.range.line,
-              e.range.column + e.range.length,
+              e.range.endLine ?? e.range.line,
+              e.range.endColumn ?? e.range.column + e.range.length,
             ),
             e.newText,
           );

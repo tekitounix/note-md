@@ -9,3 +9,12 @@ declare namespace WebAssembly {
   }
   function compile(bytes: BufferSource): Promise<Module>;
 }
+
+declare module 'katex/contrib/auto-render' {
+  interface AutoRenderOptions {
+    delimiters?: Array<{ left: string; right: string; display: boolean }>;
+    throwOnError?: boolean;
+  }
+
+  export default function renderMathInElement(element: unknown, options?: AutoRenderOptions): void;
+}

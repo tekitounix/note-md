@@ -2,7 +2,7 @@
   "name": "note-md",
   "displayName": "note-md",
   "description": "非公式の note 向け Markdown プレビュー・画像処理・本文コピー",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "tekitounix",
   "icon": "media/icon-marketplace.png",
   "license": "MIT",
@@ -31,6 +31,9 @@
     "onLanguage:markdown"
   ],
   "main": "./dist/extension.js",
+  "bin": {
+    "note-md": "./dist/cli.js"
+  },
   "contributes": {
     "commands": [
       {
@@ -72,8 +75,7 @@
         "note-md.enabledUploadServices": {
           "type": "array",
           "default": [
-            "litterbox.catbox.moe",
-            "imgbb.com"
+            "litterbox.catbox.moe"
           ],
           "items": {
             "type": "string",
@@ -88,7 +90,29 @@
           "type": "array",
           "default": [],
           "items": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "note/no-table",
+              "note/no-italic",
+              "note/no-inline-code",
+              "note/no-h456",
+              "note/no-html5",
+              "note/no-footnote",
+              "note/no-image-title",
+              "note/image-alt-empty",
+              "note/ruby-unmatched",
+              "note/ruby-nested",
+              "note/math-unmatched",
+              "note/math-display-unclosed",
+              "note/image-path-traversal",
+              "note/image-missing",
+              "note/image-oversized",
+              "note/image-unsupported",
+              "note/multiple-h1",
+              "note/hr-variant",
+              "note/unclosed-html-tag",
+              "note/consecutive-blanks"
+            ]
           },
           "description": "無効にするバリデーションルール ID の一覧 (例: [\"note/no-inline-code\", \"note/hr-variant\"])"
         }
@@ -98,32 +122,49 @@
   "scripts": {
     "vscode:prepublish": "npm run package",
     "compile": "tsc -p ./ && node esbuild.mjs",
-    "test": "npm run compile && node --test test/*.test.js",
+    "test": "npm run compile && node --test test/*.test.js && vscode-test --config .vscode-test.mjs",
+    "test:unit": "npm run compile && node --test test/*.test.js",
+    "test:extension": "npm run compile && vscode-test --config .vscode-test.mjs",
     "watch": "node esbuild.mjs --watch",
     "package": "node esbuild.mjs --production",
     "typecheck": "tsc -p ./ --noEmit",
     "lint": "eslint src/ test/",
     "lint:fix": "eslint src/ test/ --fix",
+    "vsce:ls": "vsce ls",
+    "vsce:package": "vsce package",
     "format": "prettier --write 'src/**/*.ts' 'test/**/*.js' '*.mjs' '*.json'",
     "format:check": "prettier --check 'src/**/*.ts' 'test/**/*.js' '*.mjs' '*.json'"
   },
   "dependencies": {
     "@jimp/wasm-webp": "^1.6.0",
+    "@jsquash/webp": "^1.5.0",
     "@resvg/resvg-wasm": "^2.6.2",
     "jimp": "^1.6.0",
-    "markdown-it": "^14.1.0"
+    "highlight.js": "^11.11.1",
+    "katex": "^0.17.0",
+    "markdown-it": "^14.3.0",
+    "mermaid": "^11.16.0",
+    "sanitize-html": "^2.17.6"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/markdown-it": "^14.1.2",
-    "@types/node": "^20.11.0",
+    "@types/node": "^24.0.0",
+    "@types/sanitize-html": "^2.16.1",
     "@types/vscode": "^1.85.0",
-    "esbuild": "^0.27.4",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.1",
     "eslint": "^10.0.3",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.5",
     "prettier": "^3.8.1",
     "typescript": "^5.3.0",
     "typescript-eslint": "^8.57.0"
+  },
+  "overrides": {
+    "diff": "^8.0.3",
+    "serialize-javascript": "^7.0.5"
   }
 }

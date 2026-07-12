@@ -1,6 +1,8 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
+import { normalizeImageRef, resolveLocalImageRef, resolveLocalImageRefAsync } from './imageRefs';
+import { scanImageReferences, type MarkdownImageReference } from './imageScanner';
 
 // ─── Interfaces ─────────────────────────────────────────────
 
@@ -19,7 +21,7 @@ export interface NoteDiagnostic {
 export interface QuickFix {
   title: string;
   edits: Array<{
-    range: { line: number; column: number; length: number };
+    range: { line: number; column: number; length: number; endLine?: number; endColumn?: number };
     newText: string;
   }>;
 }
@@ -37,6 +39,7 @@ interface ValidationContext {
   isProtected: (line: number) => boolean;
   isIgnored: (line: number) => boolean;
   getExclusionZones: (line: number) => Array<[number, number]>;
+  imageRefs: MarkdownImageReference[];
   articleDir?: string;
 }
 
@@ -62,15 +65,17 @@ function preprocess(lines: string[]): {
   const codeBlockLines = new Set<number>();
   let inFence = false;
   let fenceChar = '';
+  let fenceLength = 0;
   let fenceStart = -1;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!inFence) {
-      const fenceMatch = line.match(/^(`{3,}|~{3,})/);
+      const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
       if (fenceMatch) {
         inFence = true;
         fenceChar = fenceMatch[1][0];
+        fenceLength = fenceMatch[1].length;
         fenceStart = i;
         protectedLines[i] = true;
         codeBlockLines.add(i);
@@ -78,10 +83,12 @@ function preprocess(lines: string[]): {
     } else {
       protectedLines[i] = true;
       codeBlockLines.add(i);
-      const closed = fenceChar === '`' ? /^`{3,}\s*$/.test(line) : /^~{3,}\s*$/.test(line);
+      const escapedFence = fenceChar === '`' ? '`' : '~';
+      const closed = new RegExp(`^ {0,3}${escapedFence}{${fenceLength},}\\s*$`).test(line);
       if (closed) {
         inFence = false;
         fenceChar = '';
+        fenceLength = 0;
         fenceStart = -1;
       }
     }
@@ -178,6 +185,45 @@ function isInExclusionZone(zones: Array<[number, number]>, col: number, len: num
   return zones.some(([s, e]) => col >= s && col + len <= e);
 }
 
+interface ImagePathMatch {
+  value: string;
+  pathStart: number;
+  length: number;
+}
+
+function imagePathMatches(ctx: ValidationContext, line: number): ImagePathMatch[] {
+  return ctx.imageRefs
+    .filter((image) => image.line === line)
+    .map((image) => ({
+      value: image.sourceRef,
+      pathStart: image.column,
+      length: image.length,
+    }));
+}
+
+function isExternalImageRef(imgPath: string): boolean {
+  return /^https?:\/\//.test(imgPath) || imgPath.startsWith('data:');
+}
+
+function hasLocalPathEscape(imgPath: string): boolean {
+  const slashNormalized = imgPath.replace(/\\/g, '/');
+  return (
+    slashNormalized.split('/').includes('..') ||
+    path.isAbsolute(imgPath) ||
+    /^[a-zA-Z]:[\\/]/.test(imgPath)
+  );
+}
+
+function isOutsideArticleDir(articleDir: string | undefined, imgPath: string): boolean {
+  if (isExternalImageRef(imgPath)) return false;
+  if (!articleDir) return hasLocalPathEscape(imgPath);
+  return resolveLocalImageRef(articleDir, imgPath) === null;
+}
+
+function normalizedImageExt(imgPath: string): string {
+  return path.posix.extname(normalizeImageRef(imgPath)).replace(/^\./, '').toUpperCase();
+}
+
 // ─── Helpers ────────────────────────────────────────────────
 
 function diag(
@@ -213,7 +259,9 @@ const rules: ValidationRule[] = [
         if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
         const line = ctx.lines[i];
         const next = ctx.lines[i + 1];
-        if (/^\|.*\|.*\|/.test(line) && /^\|[\s:|-]+\|/.test(next)) {
+        const hasColumns = /(^|[^\\])\|/.test(line);
+        const isDelimiter = /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(next);
+        if (hasColumns && isDelimiter) {
           // Mark entire table block (header row)
           results.push(diag(this, 'テーブル記法は note.com では表示されません', i, 0, line.length));
         }
@@ -442,6 +490,30 @@ const rules: ValidationRule[] = [
     },
   },
 
+  // note/image-alt-empty — Images should explain their purpose to screen-reader users.
+  {
+    id: 'note/image-alt-empty',
+    severity: 'hint',
+    trigger: 'change',
+    check(ctx) {
+      const results: NoteDiagnostic[] = [];
+      for (const image of ctx.imageRefs) {
+        if (image.kind === 'frontmatter' || image.alt.trim() !== '') continue;
+        if (ctx.isProtected(image.line) || ctx.isIgnored(image.line)) continue;
+        results.push(
+          diag(
+            this,
+            '画像の代替テキストを入力してください。装飾画像は note-ignore-next-line で明示できます',
+            image.line,
+            image.column,
+            image.length,
+          ),
+        );
+      }
+      return results;
+    },
+  },
+
   // --- 4.2 Custom extension validation ---
 
   // note/ruby-unmatched — Mismatched ruby open/close markers
@@ -577,18 +649,15 @@ const rules: ValidationRule[] = [
       const results: NoteDiagnostic[] = [];
       for (let i = 0; i < ctx.lines.length; i++) {
         if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
-        const line = ctx.lines[i];
-        for (const m of line.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
-          const imgPath = m[1].replace(/\s+"[^"]*"$/, ''); // strip title
-          if (imgPath.includes('..')) {
-            const pathStart = m.index! + m[0].indexOf('(') + 1;
+        for (const img of imagePathMatches(ctx, i)) {
+          if (isOutsideArticleDir(ctx.articleDir, img.value)) {
             results.push(
               diag(
                 this,
-                '画像パスにディレクトリトラバーサル (..) が含まれています',
+                '画像パスが記事ディレクトリの外を参照しています',
                 i,
-                pathStart,
-                imgPath.length,
+                img.pathStart,
+                img.length,
               ),
             );
           }
@@ -609,18 +678,19 @@ const rules: ValidationRule[] = [
 
       for (let i = 0; i < ctx.lines.length; i++) {
         if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
-        const line = ctx.lines[i];
-        for (const m of line.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
-          const imgPath = m[1].replace(/\s+"[^"]*"$/, '');
-          // Skip URLs
-          if (/^https?:\/\//.test(imgPath)) continue;
-          // Directory traversal is reported by a separate rule
-          if (imgPath.includes('..')) continue;
-          const absPath = path.resolve(ctx.articleDir, imgPath);
-          if (!fs.existsSync(absPath)) {
-            const pathStart = m.index! + m[0].indexOf('(') + 1;
+        for (const img of imagePathMatches(ctx, i)) {
+          if (isExternalImageRef(img.value)) continue;
+          const resolved = resolveLocalImageRef(ctx.articleDir, img.value);
+          if (!resolved) continue;
+          if (!resolved.exists) {
             results.push(
-              diag(this, `画像ファイルが見つかりません: ${imgPath}`, i, pathStart, imgPath.length),
+              diag(
+                this,
+                `画像ファイルが見つかりません: ${img.value}`,
+                i,
+                img.pathStart,
+                img.length,
+              ),
             );
           }
         }
@@ -641,23 +711,21 @@ const rules: ValidationRule[] = [
 
       for (let i = 0; i < ctx.lines.length; i++) {
         if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
-        const line = ctx.lines[i];
-        for (const m of line.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
-          const imgPath = m[1].replace(/\s+"[^"]*"$/, '');
-          if (/^https?:\/\//.test(imgPath) || imgPath.includes('..')) continue;
-          const absPath = path.resolve(ctx.articleDir, imgPath);
+        for (const img of imagePathMatches(ctx, i)) {
+          if (isExternalImageRef(img.value)) continue;
+          const resolved = resolveLocalImageRef(ctx.articleDir, img.value);
+          if (!resolved?.exists) continue;
           try {
-            const stat = fs.statSync(absPath);
+            const stat = fs.statSync(resolved.diskPath);
             if (stat.size > MAX_SIZE) {
               const mb = (stat.size / (1024 * 1024)).toFixed(1);
-              const pathStart = m.index! + m[0].indexOf('(') + 1;
               results.push(
                 diag(
                   this,
                   `画像ファイルが 20MB を超えています (${mb}MB)`,
                   i,
-                  pathStart,
-                  imgPath.length,
+                  img.pathStart,
+                  img.length,
                 ),
               );
             }
@@ -682,19 +750,16 @@ const rules: ValidationRule[] = [
 
       for (let i = 0; i < ctx.lines.length; i++) {
         if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
-        const line = ctx.lines[i];
-        for (const m of line.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
-          const imgPath = m[1].replace(/\s+"[^"]*"$/, '');
-          if (/^https?:\/\//.test(imgPath)) continue;
-          if (autoConvert.test(imgPath)) {
-            const pathStart = m.index! + m[0].indexOf('(') + 1;
+        for (const img of imagePathMatches(ctx, i)) {
+          if (isExternalImageRef(img.value)) continue;
+          if (autoConvert.test(img.value)) {
             results.push(
               diag(
                 this,
-                `${imgPath.split('.').pop()?.toUpperCase()} 形式はアップロード時に自動変換されます`,
+                `${normalizedImageExt(img.value)} 形式はアップロード時に自動変換されます`,
                 i,
-                pathStart,
-                imgPath.length,
+                img.pathStart,
+                img.length,
               ),
             );
           }
@@ -873,9 +938,13 @@ const rules: ValidationRule[] = [
                     title: '2行に削減',
                     edits: [
                       {
-                        range: { line: blankStart, column: 0, length: 0 },
-                        // Placeholder for CodeAction — actual line deletion
-                        // is complex via text replacement
+                        range: {
+                          line: blankStart + 2,
+                          column: 0,
+                          length: 0,
+                          endLine: i,
+                          endColumn: 0,
+                        },
                         newText: '',
                       },
                     ],
@@ -932,6 +1001,7 @@ export function validate(
       }
       return zoneCache.get(line)!;
     },
+    imageRefs: scanImageReferences(text),
     articleDir,
   };
 
@@ -963,18 +1033,19 @@ const asyncRules: AsyncValidationRule[] = [
 
       for (let i = 0; i < ctx.lines.length; i++) {
         if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
-        const line = ctx.lines[i];
-        for (const m of line.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
-          const imgPath = m[1].replace(/\s+"[^"]*"$/, '');
-          if (/^https?:\/\//.test(imgPath)) continue;
-          if (imgPath.includes('..')) continue;
-          const absPath = path.resolve(ctx.articleDir, imgPath);
-          try {
-            await fsp.access(absPath);
-          } catch {
-            const pathStart = m.index! + m[0].indexOf('(') + 1;
+        for (const img of imagePathMatches(ctx, i)) {
+          if (isExternalImageRef(img.value)) continue;
+          const resolved = await resolveLocalImageRefAsync(ctx.articleDir, img.value);
+          if (!resolved) continue;
+          if (!resolved.exists) {
             results.push(
-              diag(this, `画像ファイルが見つかりません: ${imgPath}`, i, pathStart, imgPath.length),
+              diag(
+                this,
+                `画像ファイルが見つかりません: ${img.value}`,
+                i,
+                img.pathStart,
+                img.length,
+              ),
             );
           }
         }
@@ -994,23 +1065,21 @@ const asyncRules: AsyncValidationRule[] = [
 
       for (let i = 0; i < ctx.lines.length; i++) {
         if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
-        const line = ctx.lines[i];
-        for (const m of line.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
-          const imgPath = m[1].replace(/\s+"[^"]*"$/, '');
-          if (/^https?:\/\//.test(imgPath) || imgPath.includes('..')) continue;
-          const absPath = path.resolve(ctx.articleDir, imgPath);
+        for (const img of imagePathMatches(ctx, i)) {
+          if (isExternalImageRef(img.value)) continue;
+          const resolved = await resolveLocalImageRefAsync(ctx.articleDir, img.value);
+          if (!resolved?.exists) continue;
           try {
-            const stat = await fsp.stat(absPath);
+            const stat = await fsp.stat(resolved.diskPath);
             if (stat.size > MAX_SIZE) {
               const mb = (stat.size / (1024 * 1024)).toFixed(1);
-              const pathStart = m.index! + m[0].indexOf('(') + 1;
               results.push(
                 diag(
                   this,
                   `画像ファイルが 20MB を超えています (${mb}MB)`,
                   i,
-                  pathStart,
-                  imgPath.length,
+                  img.pathStart,
+                  img.length,
                 ),
               );
             }
@@ -1026,6 +1095,11 @@ const asyncRules: AsyncValidationRule[] = [
 
 /** IDs of rules that have async replacements */
 const asyncRuleIds = new Set(asyncRules.map((r) => r.id));
+
+/** Stable rule IDs exposed to configuration UIs and the CLI. */
+export const RULE_IDS = Object.freeze([
+  ...new Set([...rules, ...asyncRules].map((rule) => rule.id)),
+]);
 
 /**
  * Async validation — runs all sync rules plus async I/O-bound rules.
@@ -1054,6 +1128,7 @@ export async function validateAsync(
       }
       return zoneCache.get(line)!;
     },
+    imageRefs: scanImageReferences(text),
     articleDir,
   };
 

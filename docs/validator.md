@@ -1,144 +1,47 @@
 # note-md バリデータ
 
-最終更新日: 2026-03-14
+最終更新日: 2026-07-13
 
-この文書は、現行バリデータ実装の目的、仕組み、運用ルールを説明する正本です。
+バリデータは、note で無視・変形される可能性が高い Markdown と、コピー準備を妨げる画像問題を原文上で検出する。プレビューの開閉とは独立して動き、問題一覧、即時修正、コマンドラインが同じ `src/validator.ts` を使う。
 
-## 目的
+## 実行
 
-バリデータは、note.com で崩れるか無視される可能性が高い Markdown を、執筆中に早めに見つけるための仕組みです。
+- 文書を開いたとき、編集から 300 ms 後、対象設定を変更したとき: 軽量な change rules
+- 保存したとき: 編集時ルールに加え、画像の存在・サイズを非同期確認する保存時ルール
+- CLI: 全 rules を実行する。`--strict` は warning も失敗にする
 
-警告は VS Code の Problems パネルに表示されます。
+```sh
+note-md check --strict article.md
+note-md check --stdin --article-dir . --format json
+note-md check article.md --format sarif
+note-md rules
+```
 
-## 構成
+終了コードは 0 が合格、1 が診断による不合格、2 が引数・読込などの実行エラーである。
 
-- src/validator.ts
-ルール定義、前処理、診断生成。
+## 主なルール
 
-- src/codeActions.ts
-Quick Fix を Code Action として出す。
+| 分類 | rule ID |
+|---|---|
+| 非対応書式 | `note/no-table`、`note/no-italic`、`note/no-inline-code`、`note/no-h456`、`note/no-html5`、`note/no-footnote`、`note/no-image-title` |
+| source 整合性 | `note/ruby-unmatched`、`note/ruby-nested`、`note/math-unmatched`、`note/math-display-unclosed` |
+| 画像 | `note/image-path-traversal`、`note/image-missing`、`note/image-oversized`、`note/image-unsupported`、`note/image-alt-empty` |
+| 構造・品質 | `note/multiple-h1`、`note/hr-variant`、`note/unclosed-html-tag`、`note/consecutive-blanks` |
 
-- src/extension.ts
-change/save 時に validate() を呼び、DiagnosticCollection を更新する。
-
-- src/previewPanel.ts
-最新の診断を保持し、update メッセージへ載せる。
-
-- src/render.ts
-data-source-line と注釈描画 UI を持つ。
-
-## 実行タイミング
-
-### change トリガー
-
-- 300ms debounce 後に走る
-- テキスト解析だけで完結する軽量ルールを対象にする
-
-### save トリガー
-
-- 保存後に走る
-- ファイル存在確認や画像サイズ確認など I/O を伴うルールを含める
-
-## 前処理
-
-validator.ts は各実行ごとに前処理を1回だけ行う。
-
-### 保護範囲
-
-以下は通常ルールの誤検出を防ぐため保護する。
-
-- フェンスコードブロック
-- ディスプレイ数式ブロック
-
-### 除外範囲
-
-行内では次を除外ゾーンとして扱う。
-
-- インラインコード
-- インライン数式
-- リンク URL 部分
-- HTML 属性値
-- 裸の URL
-
-### ignore コメント
-
-次の形式で、次の1行だけ診断を抑制できる。
+`note/image-alt-empty` はアクセシビリティの hint である。装飾画像として空 ALT を意図する場合は、画像の直前に次を置く。
 
 ```html
 <!-- note-ignore-next-line -->
 ```
 
-## ルール分類
+## 抑制と Quick Fix
 
-### 非対応書式
+設定 `note-md.validator.disabledRules` には `note-md rules` が返す ID だけを指定できる。単発の例外は `note-ignore-next-line` を優先する。
 
-例:
+即時修正は、見出しの深さ、区切り線、行内コードの記号、画像題名など、意味を推測せず安全に変えられる場合だけ提供する。本文の意味や画像の選択を AI や整形器が勝手に変えない。
 
-- テーブル
-- イタリック
-- インラインコード
-- h4-h6
-- details / summary / 定義リスト
-- 脚注
+## parser と安全性
 
-### note 独自拡張の壊れ検出
+フェンスコード、数式、前付け情報、明示的な除外対象は前処理で保護する。画像は `imageScanner.ts` が、空白や括弧を含む参照先、参照定義形式、HTML 画像、前付け情報のヘッダー画像を共通解析する。パスは `imageRefs.ts` が URL 復号と実体パス確認を適用し、シンボリックリンクを含め記事ディレクトリ外を拒否する。
 
-例:
-
-- ルビの開閉不整合
-- 数式デリミタ不整合
-- 未閉じディスプレイ数式
-
-### 画像関連
-
-save 時に、次のような問題を見る。
-
-- 参照先ファイルが存在しない
-- ディレクトリ外参照
-- 20MB 超過
-- 自動変換対象形式
-- 幅不足のヒント
-
-### 構造・品質
-
-例:
-
-- 複数 h1
-- 区切り線バリアント
-- 未閉じ HTML タグ
-- 過剰な空行
-
-## Quick Fix 方針
-
-Quick Fix は、機械的に安全に直せるものだけを対象にする。
-
-対象例:
-
-- インラインコードのバッククォート除去
-- h4-h6 を h3 に下げる
-- 複数 h1 を h2 へ落とす
-- 区切り線を --- に正規化する
-
-対象外:
-
-- 意味解釈が必要な修正
-- 画像差し替えのように I/O 依存が強い修正
-- ユーザー意図を壊しやすい広範囲変形
-
-## パフォーマンス方針
-
-1. 前処理は1回だけ行う
-2. 保護範囲は boolean 配列で O(1) 判定する
-3. 除外ゾーンは行ごとに遅延計算してキャッシュする
-4. 重い I/O ルールは save 時だけに寄せる
-
-## 制約
-
-バリデータは note の内部実装を参照しているわけではなく、観測ベースで危険なパターンを警告している。したがって、ここで問題なしでも note 側で完全一致を保証するものではありません。
-
-## 関連文書
-
-- docs/format-reference.md
-- docs/paste-workflow.md
-- docs/architecture.md
-- docs/release-checklist.md
+この検査は観測済みの note 挙動を支援するもので、note の内部仕様や将来の表示を保証しない。公開前は preview と note 側の最終表示を人間が確認する。

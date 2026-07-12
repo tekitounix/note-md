@@ -1,17 +1,17 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { NotePreviewPanel } from './previewPanel';
-import { processImages } from './imageProcessor';
-import { getServiceManager, resetServiceManager } from './services';
+import { processImages, resetImageProcessorCache } from './imageProcessor';
+import { resetServiceManager } from './services';
 import { ensureUploadConsent } from './consent';
 import { validate, validateAsync, type NoteDiagnostic } from './validator';
 import { NoteCodeActionProvider, diagCache } from './codeActions';
 import { resetUploadCache } from './upload';
 
-export function activate(context: vscode.ExtensionContext): void {
-  // Start upload service health check in the background
-  getServiceManager().initialize();
+const validationRequests = new Map<string, number>();
+let nextValidationRequest = 0;
 
+export function activate(context: vscode.ExtensionContext): void {
   // DiagnosticCollection
   const diagnostics = vscode.languages.createDiagnosticCollection('note-md');
   context.subscriptions.push(diagnostics);
@@ -25,15 +25,11 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
   );
 
-  // Clear diagnostics when preview panel is closed
-  NotePreviewPanel.onDidDispose(() => {
-    diagnostics.clear();
-  });
-
   // Status bar
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBar.name = 'note-md';
   context.subscriptions.push(statusBar);
+  let statusHideTimer: ReturnType<typeof setTimeout> | undefined;
 
   // Open preview command
   context.subscriptions.push(
@@ -73,23 +69,37 @@ export function activate(context: vscode.ExtensionContext): void {
       } catch {
         statusBar.text = '$(warning) note 画像処理失敗';
       }
-      setTimeout(() => statusBar.hide(), 5000);
+      if (statusHideTimer) clearTimeout(statusHideTimer);
+      statusHideTimer = setTimeout(() => {
+        statusHideTimer = undefined;
+        statusBar.hide();
+      }, 5000);
     }),
   );
 
-  // Update preview on editor changes (debounce 300ms)
-  let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+  // Update preview and diagnostics on editor changes (per-document debounce).
+  const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  context.subscriptions.push({
+    dispose() {
+      for (const timer of debounceTimers.values()) clearTimeout(timer);
+      debounceTimers.clear();
+      if (statusHideTimer) clearTimeout(statusHideTimer);
+      statusHideTimer = undefined;
+    },
+  });
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument((e) => {
       if (e.document.languageId === 'markdown') {
-        if (debounceTimer) clearTimeout(debounceTimer);
+        const key = e.document.uri.toString();
+        const currentTimer = debounceTimers.get(key);
+        if (currentTimer) clearTimeout(currentTimer);
         const doc = e.document;
-        debounceTimer = setTimeout(() => {
+        const timer = setTimeout(() => {
+          debounceTimers.delete(key);
           NotePreviewPanel.update(doc);
-          if (NotePreviewPanel.isActive) {
-            runValidation(doc, 'change', diagnostics);
-          }
+          runValidation(doc, 'change', diagnostics);
         }, 300);
+        debounceTimers.set(key, timer);
       }
     }),
   );
@@ -97,8 +107,13 @@ export function activate(context: vscode.ExtensionContext): void {
   // Save trigger (runs all rules including I/O-bound ones)
   context.subscriptions.push(
     vscode.workspace.onDidSaveTextDocument((doc) => {
-      if (doc.languageId === 'markdown' && NotePreviewPanel.isActive) {
-        setTimeout(() => runValidation(doc, 'save', diagnostics), 0);
+      if (doc.languageId === 'markdown') {
+        const key = doc.uri.toString();
+        const timer = debounceTimers.get(key);
+        if (timer) clearTimeout(timer);
+        debounceTimers.delete(key);
+        NotePreviewPanel.update(doc);
+        runValidation(doc, 'save', diagnostics);
       }
     }),
   );
@@ -106,7 +121,30 @@ export function activate(context: vscode.ExtensionContext): void {
   // Clear diagnostics when document is closed
   context.subscriptions.push(
     vscode.workspace.onDidCloseTextDocument((doc) => {
+      const key = doc.uri.toString();
+      const timer = debounceTimers.get(key);
+      if (timer) clearTimeout(timer);
+      debounceTimers.delete(key);
+      validationRequests.delete(key);
+      for (const cacheKey of diagCache.keys()) {
+        if (cacheKey.startsWith(`${doc.uri}:`)) diagCache.delete(cacheKey);
+      }
       diagnostics.delete(doc.uri);
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.workspace.onDidOpenTextDocument((doc) => {
+      if (doc.languageId === 'markdown') runValidation(doc, 'change', diagnostics);
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (!event.affectsConfiguration('note-md.validator')) return;
+      for (const doc of vscode.workspace.textDocuments) {
+        if (doc.languageId === 'markdown') runValidation(doc, 'change', diagnostics);
+      }
     }),
   );
 
@@ -114,13 +152,15 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor((editor) => {
       if (editor && editor.document.languageId === 'markdown') {
-        if (NotePreviewPanel.isActive) {
-          NotePreviewPanel.follow(editor.document);
-          runValidation(editor.document, 'change', diagnostics);
-        }
+        NotePreviewPanel.follow(editor.document);
+        runValidation(editor.document, 'change', diagnostics);
       }
     }),
   );
+
+  for (const doc of vscode.workspace.textDocuments) {
+    if (doc.languageId === 'markdown') runValidation(doc, 'change', diagnostics);
+  }
 
   // Editor scroll → preview sync
   context.subscriptions.push(
@@ -183,6 +223,9 @@ function runValidation(
   trigger: 'change' | 'save',
   collection: vscode.DiagnosticCollection,
 ): void {
+  const requestKey = doc.uri.toString();
+  const requestId = ++nextValidationRequest;
+  validationRequests.set(requestKey, requestId);
   const config = vscode.workspace.getConfiguration('note-md');
   const disabledRules = config.get<string[]>('validator.disabledRules', []);
   const articleDir = path.dirname(doc.fileName);
@@ -190,11 +233,15 @@ function runValidation(
   if (trigger === 'save') {
     // Use async validation for save to avoid blocking on fs I/O
     const version = doc.version;
-    void validateAsync(doc.getText(), articleDir, disabledRules).then((results) => {
-      // Discard stale results if document changed during async validation
-      if (doc.version !== version) return;
-      applyDiagnostics(doc, results, collection);
-    });
+    void validateAsync(doc.getText(), articleDir, disabledRules)
+      .then((results) => {
+        // Discard stale results if document changed during async validation
+        if (doc.version !== version || validationRequests.get(requestKey) !== requestId) return;
+        applyDiagnostics(doc, results, collection);
+      })
+      .catch((error: unknown) => {
+        console.error('note-md validation failed', error);
+      });
   } else {
     const results = validate(doc.getText(), trigger, articleDir, disabledRules);
     applyDiagnostics(doc, results, collection);
@@ -203,6 +250,8 @@ function runValidation(
 
 export function deactivate(): void {
   resetServiceManager();
+  resetImageProcessorCache();
   resetUploadCache();
+  validationRequests.clear();
   diagCache.clear();
 }

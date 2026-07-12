@@ -1,6 +1,6 @@
 # note-md
 
-非公式の note 向け Markdown プレビュー・画像処理・本文コピーを提供する VS Code 拡張機能。
+非公式の note 向け Markdown プレビュー、常時バリデーション、CLI、画像処理、本文コピーを提供する執筆支援環境。
 
 > **本プロジェクトは note 株式会社および note.com とは無関係の個人プロジェクトです。**
 >
@@ -17,6 +17,7 @@
 - ゴシック / 明朝の書体切り替え
 - 目次（サイドバー TOC）と文字数カウンター（実サイトとは計算方法が異なる場合があります）
 - 数式（KaTeX）、Mermaid ダイアグラム、シンタックスハイライト対応
+- 表示用 JavaScript、CSS、font は VSIX 内に同梱し、公開 CDN へ接続しない
 
 ### 本文コピー
 
@@ -38,25 +39,55 @@
 
 - note 非対応書式（テーブル、インラインコード、イタリックなど）を警告
 - VS Code の Problems パネルに表示
+- プレビューを開いていない Markdown 文書でも常時検査
 - 画像パスの安全性チェック（パストラバーサル検出）
+- 空の画像代替テキストにアクセシビリティのヒントを表示
 - QuickFix 対応（h1 分割、画像 title 除去など）
 - `<!-- note-ignore-next-line -->` で個別の警告を抑制可能
+- 同じルールを headless CLI から text / JSON / SARIF で利用可能
 
 ## インストール
 
-VS Code Marketplace で **「note-md」** を検索してインストール。
+[Releases](https://github.com/tekitounix/note-md/releases) から `.vsix` をダウンロードし、拡張機能ビュー → `…` → **VSIX からインストール…**、または次を実行します。
 
-> **Marketplace 未公開の場合**: [Releases](https://github.com/tekitounix/note-md/releases) から `.vsix` をダウンロードし、拡張機能ビュー → `…` → **VSIX からインストール…**、またはコマンドラインで `code --install-extension note-md-*.vsix`
+```sh
+code --install-extension note-md-*.vsix
+```
+
+Marketplace は公開準備中です。公開を確認できるまでは Releases を正規の導線とします。
 
 ## クイックスタート
 
 1. 拡張機能をインストール
 2. Markdown ファイルを開く
-3. エディタ右上のプレビューアイコン、またはコマンドパレットから **「note プレビューを開く」** を実行
-4. ツールバーの **「タイトル」** → note のタイトル欄にペースト
-5. ツールバーの **「本文コピー」** → note のエディタ本文にペースト
+3. Problems に出た error / warning を修正
+4. エディタ右上のプレビューアイコン、またはコマンドパレットから **「note プレビューを開く」** を実行
+5. ツールバーの **「タイトル」** → note のタイトル欄にペースト
+6. 画像準備が完了して **「本文コピー」** が有効になったら、note のエディタ本文にペースト
 
 ローカル画像がある場合は、プレビューを開くと自動で変換・アップロードされます（初回に確認ダイアログが表示されます）。
+一件でも画像が未解決、変換失敗、アップロード失敗の場合は本文コピーを有効にしません。
+
+## CLI
+
+CLI は VS Code を起動せず同じ rules を実行するため、AI、pre-commit、任意の editor から利用できます。現在は repository checkout で提供します。
+
+```sh
+npm ci
+npm run compile
+npm link
+
+note-md check --strict article.md
+note-md check --stdin --article-dir . --format json
+note-md check article.md --format sarif
+note-md rules
+```
+
+終了コードは 0 が合格、1 が診断による不合格、2 が実行エラーです。warning を許容する通常検査では `--strict` を外し、上限を指定するときは `--max-warnings 0` のように設定します。
+
+## AI スキル
+
+`.agents/skills/note-writing/` を正本として、Claude と GitHub 系の探索位置にも薄い入口を配置しています。「note の記事を書きたい」「この原稿を note 用に推敲して」のような依頼で使い、執筆後に CLI の strict check とプレビュー確認を行います。skill は note への自動投稿や、同意のない画像アップロードを行いません。
 
 ## 対応書式
 
@@ -95,7 +126,7 @@ VS Code Marketplace で **「note-md」** を検索してインストール。
 | 設定 | 説明 | デフォルト |
 |------|------|------------|
 | `note-md.uploadExpiry` | 画像アップロードの有効期限 | `72h` |
-| `note-md.enabledUploadServices` | 利用するアップロードサービス名の一覧 | `['litterbox.catbox.moe', 'imgbb.com']` |
+| `note-md.enabledUploadServices` | 利用するアップロードサービス名の一覧 | `['litterbox.catbox.moe']` |
 | `note-md.validator.disabledRules` | 無効化するバリデーションルール ID | `[]` |
 
 ## データの取り扱い
@@ -115,13 +146,13 @@ note のエディタはペースト時にブラウザ上で画像 URL を fetch 
 | 優先度 | サービス | 運営 | 保持期間 | CORS | 備考 |
 |--------|----------|------|----------|------|------|
 | 1 | [litterbox.catbox.moe](https://litterbox.catbox.moe/) | Catbox LLC (米国) | 1h–72h (設定可能) | `*` | 一時ホスティング専用。Catbox 利用規約に商用利用の事前承認条項あり |
-| 2 | [imgbb.com](https://imgbb.com/) (i.ibb.co) | ImgBB | 有効期限指定可 | `*` | 非公式エンドポイント (`/json`) を使用（後述） |
+| 2 | [imgbb.com](https://imgbb.com/) (i.ibb.co) | ImgBB | 有効期限指定可 | `*` | 既定無効。非公式エンドポイント (`/json`) を使用（後述） |
 
-既定では両サービスが有効です（litterbox 優先、imgbb はフォールバック）。
+既定では litterbox のみ有効です。imgbb は明示的に設定した場合だけフォールバック候補になります。
 
 > **imgbb.com について**: API キー不要の `/json` エンドポイントを使用しています。
 > これは imgbb.com の公式 API (`api.imgbb.com`) ではなく、Web フロントエンドが内部的に使用しているエンドポイントです。
-> 予告なく廃止・仕様変更される可能性があるため、フォールバック用途としてのみ利用しています。
+> 予告なく廃止・仕様変更される可能性があるため、既定では無効にしています。
 
 ### アクセス可能性
 
@@ -129,6 +160,7 @@ note のエディタはペースト時にブラウザ上で画像 URL を fetch 
 - パスワード保護や認証はありません
 - 機密画像や限定公開前提の画像はアップロードしないでください
 - サービス提供者側で IP アドレス、ファイル名、ハッシュ、アップロード時刻等が記録される場合があります
+- 拡張機能は初回同意後に接続確認を行い、アップロード後の配信 URL が note.com から取得できる CORS と画像 Content-Type を返すか検証します
 
 ### 目的と仕組み
 
@@ -153,16 +185,19 @@ note のエディタはペースト時にブラウザ上で画像 URL を fetch 
 
 ## 開発
 
+- 実行環境: Node.js 24 LTS、npm
 - ビルド: `npm run compile`
-- 回帰テスト: `npm test`
+- 回帰テスト: `npm test`（単体テスト + VS Code Extension Host 統合テスト）
 - パッケージ: `npm run package`
+- デバッグ: VS Code の `Run Extension` を起動すると `test-workspace/sample.md` が開きます
 
 ## ドキュメント
 
+- [docs/changelog.md](docs/changelog.md): リリースごとの利用者向け変更履歴
 - [docs/format-reference.md](docs/format-reference.md): 対応書式と制約
 - [docs/paste-workflow.md](docs/paste-workflow.md): note へ貼り付ける実運用手順
 - [docs/image-specs.md](docs/image-specs.md): note の画像仕様メモ
-- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md): 外部依存と第三者サービスの注意事項
+- [docs/third-party-notices.md](docs/third-party-notices.md): 同梱依存と第三者サービスの注意事項
 - [docs/architecture.md](docs/architecture.md): 実装アーキテクチャ
 - [docs/validator.md](docs/validator.md): バリデータの設計と運用
 - [docs/release-checklist.md](docs/release-checklist.md): リリース前の確認項目

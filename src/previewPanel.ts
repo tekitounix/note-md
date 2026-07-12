@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import * as os from 'os';
 import * as fsp from 'fs/promises';
 import { randomBytes } from 'node:crypto';
 import { renderPreview, renderBody } from './render';
@@ -24,7 +23,10 @@ async function computeImageFingerprint(
   const parts: string[] = [];
   for (const imgRef of [...refs.local].sort()) {
     const resolved = resolveLocalImageRef(articleDir, imgRef);
-    if (!resolved) continue;
+    if (!resolved) {
+      parts.push(`${imgRef}:INVALID`);
+      continue;
+    }
     try {
       if (!resolved.exists) {
         parts.push(`${resolved.sourceRef}:MISSING`);
@@ -57,10 +59,10 @@ export class NotePreviewPanel {
   private generation = 0;
   /** Document version of the last incremental render — skip if unchanged. */
   private lastRenderedVersion = -1;
-  /** Temp HTML files created for browser preview — cleaned up on dispose. */
-  private tempPreviewFiles: string[] = [];
-  /** Callbacks invoked when the panel is disposed. */
-  private static onDisposeCallbacks: Array<() => void> = [];
+  /** Capability token accepted from the current Webview document. */
+  private webviewMessageToken = '';
+  /** Whether the current page loaded the optional Mermaid bundle. */
+  private mermaidEnabled = false;
 
   private constructor(
     panel: vscode.WebviewPanel,
@@ -92,11 +94,6 @@ export class NotePreviewPanel {
     return NotePreviewPanel.instance !== undefined;
   }
 
-  /** Register a callback to be invoked when the panel is disposed. */
-  static onDidDispose(callback: () => void): void {
-    NotePreviewPanel.onDisposeCallbacks.push(callback);
-  }
-
   static createOrShow(context: vscode.ExtensionContext, document: vscode.TextDocument): void {
     const existing = NotePreviewPanel.instance;
     if (existing) {
@@ -110,16 +107,6 @@ export class NotePreviewPanel {
       return;
     }
 
-    // Build localResourceRoots from workspace folders + document directory
-    const roots: vscode.Uri[] = [];
-    if (vscode.workspace.workspaceFolders) {
-      for (const wf of vscode.workspace.workspaceFolders) {
-        roots.push(wf.uri);
-      }
-    }
-    // Always include the document's directory (may be outside workspace)
-    roots.push(vscode.Uri.file(path.dirname(document.fileName)));
-
     const panel = vscode.window.createWebviewPanel(
       NotePreviewPanel.viewType,
       `note プレビュー: ${path.basename(document.fileName)}`,
@@ -127,7 +114,10 @@ export class NotePreviewPanel {
       {
         enableScripts: true,
         retainContextWhenHidden: true,
-        localResourceRoots: roots,
+        localResourceRoots: [
+          vscode.Uri.file(path.dirname(document.fileName)),
+          vscode.Uri.joinPath(context.extensionUri, 'dist'),
+        ],
       },
     );
 
@@ -172,9 +162,12 @@ export class NotePreviewPanel {
    * the copy button enabled without triggering the upload dialog.
    */
   private async checkAndUpload(document: vscode.TextDocument, delayMs: number): Promise<void> {
+    const targetUri = document.uri.toString();
+    const gen = this.generation;
     const articleDir = path.dirname(document.fileName);
     const fp = await computeImageFingerprint(document.getText(), articleDir);
-    const gen = this.generation;
+
+    if (this.documentUri.toString() !== targetUri || this.generation !== gen) return;
 
     if (fp === null) {
       // No local images — enable copy immediately
@@ -218,7 +211,7 @@ export class NotePreviewPanel {
     const refs = extractImageRefs(markdown);
     for (const imgRef of refs.local) {
       const resolved = resolveLocalImageRef(articleDir, imgRef);
-      if (!resolved || !resolved.exists) continue;
+      if (!resolved || !resolved.exists) return false;
       if (!resolveMappedImageUrl(urlMap, resolved.sourceRef)) return false;
     }
     return true;
@@ -305,6 +298,13 @@ export class NotePreviewPanel {
     this.lastImageFingerprint = null; // reset for new document
     this.lastRenderedVersion = -1;
     this.panel.title = `note プレビュー: ${path.basename(document.fileName)}`;
+    this.panel.webview.options = {
+      ...this.panel.webview.options,
+      localResourceRoots: [
+        vscode.Uri.file(path.dirname(document.fileName)),
+        vscode.Uri.joinPath(this.context.extensionUri, 'dist'),
+      ],
+    };
     this.fullRender(document);
     // checkAndUpload will be triggered by the 'webview-ready' message
     // after the new page's JS initializes.
@@ -313,18 +313,26 @@ export class NotePreviewPanel {
   /** Full-page render (initial load or document switch). */
   private fullRender(document: vscode.TextDocument): void {
     this.generation++;
+    this.webviewMessageToken = getNonce();
     const markdown = document.getText();
+    this.mermaidEnabled = /^\s{0,3}(?:```+|~~~+)mermaid\b/m.test(markdown);
     const articleDir = path.dirname(document.fileName);
     const urlMap = loadUrlMap(articleDir) ?? undefined;
     const webview = this.panel.webview;
     const baseUri = webview.asWebviewUri(vscode.Uri.file(articleDir));
+    const assetBaseUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.context.extensionUri, 'dist'),
+    );
     const nonce = getNonce();
     const html = renderPreview(markdown, {
       urlMap,
       nonce,
       cspSource: webview.cspSource,
       baseUri: baseUri.toString(),
+      assetBaseUri: assetBaseUri.toString(),
+      articleDir,
       generation: this.generation,
+      messageToken: this.webviewMessageToken,
     });
     webview.html = html;
   }
@@ -334,6 +342,10 @@ export class NotePreviewPanel {
     if (document.version === this.lastRenderedVersion) return;
     this.lastRenderedVersion = document.version;
     const markdown = document.getText();
+    if (!this.mermaidEnabled && /^\s{0,3}(?:```+|~~~+)mermaid\b/m.test(markdown)) {
+      this.fullRender(document);
+      return;
+    }
     const articleDir = path.dirname(document.fileName);
     const urlMap = loadUrlMap(articleDir) ?? undefined;
     const webview = this.panel.webview;
@@ -341,6 +353,7 @@ export class NotePreviewPanel {
     const result = renderBody(markdown, {
       urlMap,
       baseUri: baseUri.toString(),
+      articleDir,
     });
     webview.postMessage({
       type: 'update',
@@ -355,6 +368,8 @@ export class NotePreviewPanel {
   }
 
   private async handleMessage(msg: { type: string; [key: string]: unknown }): Promise<void> {
+    if (!this.isTrustedWebviewMessage(msg)) return;
+
     switch (msg.type) {
       case 'webview-ready': {
         // Webview JS has initialized and its message listener is active.
@@ -365,49 +380,10 @@ export class NotePreviewPanel {
         if (editor) this.checkAndUpload(editor.document, 0);
         break;
       }
-      case 'copy': {
-        // Webview sends copy data via postMessage because
-        // navigator.clipboard.write is not available in Webview iframes.
-        const text = String(msg.text ?? '');
-        try {
-          await vscode.env.clipboard.writeText(text);
-          // VS Code API only supports writeText; html is best-effort
-          this.panel.webview.postMessage({
-            type: 'copy-result',
-            ok: true,
-            label: String(msg.label ?? ''),
-          });
-        } catch {
-          this.panel.webview.postMessage({
-            type: 'copy-result',
-            ok: false,
-            label: String(msg.label ?? ''),
-          });
-        }
-        break;
-      }
       case 'force-upload':
         if (this.consentGranted === false) this.consentGranted = undefined;
         await this.runUpload(true);
         break;
-      case 'open-in-browser': {
-        const editor = vscode.window.visibleTextEditors.find(
-          (e) => e.document.uri.toString() === this.documentUri.toString(),
-        );
-        if (!editor) return;
-        const markdown = editor.document.getText();
-        const articleDir = path.dirname(editor.document.fileName);
-        const urlMap = loadUrlMap(articleDir) ?? undefined;
-        const html = renderPreview(markdown, { urlMap });
-        const tmpPath = path.join(
-          os.tmpdir(),
-          `note-md-preview-${randomBytes(4).toString('hex')}.html`,
-        );
-        await fsp.writeFile(tmpPath, html, 'utf-8');
-        this.tempPreviewFiles.push(tmpPath);
-        vscode.env.openExternal(vscode.Uri.file(tmpPath));
-        break;
-      }
       case 'open-cheatsheet': {
         const docPath = path.join(this.context.extensionPath, 'docs', 'format-reference.md');
         try {
@@ -418,25 +394,19 @@ export class NotePreviewPanel {
         }
         break;
       }
-      case 'show-info':
-        vscode.window.showInformationMessage(String(msg.text));
-        break;
-      case 'show-error':
-        vscode.window.showErrorMessage(String(msg.text));
-        break;
     }
+  }
+
+  private isTrustedWebviewMessage(msg: { type: string; [key: string]: unknown }): boolean {
+    if (typeof msg.type !== 'string') return false;
+    if (typeof msg.token !== 'string' || msg.token !== this.webviewMessageToken) return false;
+    if (typeof msg.gen !== 'number' || msg.gen !== this.generation) return false;
+    return true;
   }
 
   private dispose(): void {
     if (this.uploadTimer) clearTimeout(this.uploadTimer);
     NotePreviewPanel.instance = undefined;
-    for (const cb of NotePreviewPanel.onDisposeCallbacks) {
-      cb();
-    }
-    for (const f of this.tempPreviewFiles) {
-      fsp.unlink(f).catch(() => {});
-    }
-    this.tempPreviewFiles = [];
     this.panel.dispose();
     for (const d of this.disposables) {
       d.dispose();

@@ -1,6 +1,10 @@
 node_modules/
+.vscode-test/
 out/
 dist/
 *.vsix
 .DS_Store
-test-workspace/
+test-workspace/*
+!test-workspace/figures/
+!test-workspace/sample.md
+!test-workspace/figures/diagram.svg

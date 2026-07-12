@@ -1,0 +1,7 @@
+interface:
+  display_name: "note 執筆"
+  short_description: "note 向けの記事を執筆・推敲し、形式を自動検査します"
+  default_prompt: "$note-writing を使い、公開前に検査できる note 記事を執筆してください。"
+
+policy:
+  allow_implicit_invocation: true

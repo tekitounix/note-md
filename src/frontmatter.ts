@@ -36,11 +36,10 @@ export interface ParseResult {
  */
 export function parseFrontmatter(markdown: string): ParseResult {
   // Must start with "---" on the very first line
-  if (!markdown.startsWith('---')) {
+  const lines = markdown.split('\n');
+  if (lines[0]?.trimEnd() !== '---') {
     return { data: {}, content: markdown, lineCount: 0 };
   }
-
-  const lines = markdown.split('\n');
   // Find closing "---"
   let endIndex = -1;
   for (let i = 1; i < lines.length; i++) {
@@ -68,11 +67,8 @@ export function parseFrontmatter(markdown: string): ParseResult {
     if (key) data[key] = value;
   }
 
-  // Strip frontmatter from content (preserve blank line after closing delimiter)
-  const content = lines
-    .slice(endIndex + 1)
-    .join('\n')
-    .replace(/^\n/, '');
+  // Strip frontmatter while preserving line offsets for source mapping.
+  const content = lines.slice(endIndex + 1).join('\n');
   const lineCount = endIndex + 1;
 
   return { data, content, lineCount };
