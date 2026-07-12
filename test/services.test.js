@@ -80,8 +80,51 @@ test('ServiceManager uploads to Litterbox and verifies the served image contract
   assert.ok(outcome.expiresAt >= before + 3_600_000);
   assert.deepEqual(
     calls.map(({ method }) => method),
-    ['HEAD', 'POST', 'HEAD'],
+    ['HEAD', 'POST', 'GET'],
   );
+});
+
+test('ServiceManager rejects comma-separated CORS origins that browsers reject', async () => {
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url === 'https://litterbox.catbox.moe/') return response(null, { status: 200 });
+    if (url.includes('/resources/internals/api.php')) {
+      return response('https://files.catbox.moe/article.png', { status: 200 });
+    }
+    return response(null, {
+      status: 206,
+      headers: {
+        'access-control-allow-origin': '*, https://note.com',
+        'content-type': 'image/png',
+      },
+    });
+  };
+
+  await assert.rejects(
+    () => new ServiceManager().upload(Buffer.from('png'), 'article.png'),
+    /CORS/,
+  );
+});
+
+test('ServiceManager discards stale health checks after service settings change', async () => {
+  const manager = new ServiceManager();
+  const [litterbox, imgbb] = manager.services;
+  let resolveLitterbox;
+  let resolveImgBB;
+  litterbox.healthCheck = () => new Promise((resolve) => (resolveLitterbox = resolve));
+  imgbb.healthCheck = () => new Promise((resolve) => (resolveImgBB = resolve));
+
+  enabledServices = ['litterbox.catbox.moe'];
+  const oldInitialization = manager.initialize();
+  enabledServices = ['imgbb.com'];
+  const currentInitialization = manager.initialize();
+
+  resolveImgBB(true);
+  await currentInitialization;
+  resolveLitterbox(true);
+  await oldInitialization;
+
+  assert.deepEqual(manager.healthyNames, ['imgbb.com']);
 });
 
 test('ServiceManager rejects an unexpected upload domain and falls back to ImgBB', async () => {

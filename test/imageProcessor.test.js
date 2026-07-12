@@ -165,6 +165,24 @@ test('processImages uploads identical supported images once and maps every sourc
   }
 });
 
+test('processImages resolves Markdown escapes and HTML entities like the renderer', async () => {
+  const articleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'note-md-images-canonical-'));
+  try {
+    fs.writeFileSync(path.join(articleDir, 'a(final).png'), Buffer.from('first'));
+    fs.writeFileSync(path.join(articleDir, 'a&b.png'), Buffer.from('second'));
+    const markdown = '![escaped](a\\(final\\).png)\n\n![entity](a&amp;b.png)';
+    const urlMap = await processImages(
+      makeDocument(path.join(articleDir, 'article.md'), markdown),
+      '1h',
+      false,
+      process.cwd(),
+    );
+    assert.deepEqual(Object.keys(urlMap).sort(), ['a&b.png', 'a(final).png']);
+  } finally {
+    fs.rmSync(articleDir, { recursive: true, force: true });
+  }
+});
+
 test('processImages converts SVG to a PNG before upload', async () => {
   const articleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'note-md-images-svg-'));
   try {
@@ -184,6 +202,36 @@ test('processImages converts SVG to a PNG before upload', async () => {
     assert.equal(uploads[0].fileName, 'diagram.png');
     assert.deepEqual([...uploads[0].data.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
     assert.equal(urlMap['diagram.svg'], 'https://example.com/diagram.png');
+  } finally {
+    fs.rmSync(articleDir, { recursive: true, force: true });
+  }
+});
+
+test('resetImageProcessorCache does not reinitialize process-wide WASM modules', async () => {
+  const articleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'note-md-images-svg-reset-'));
+  try {
+    fs.copyFileSync(
+      path.join(process.cwd(), 'test-workspace', 'figures', 'diagram.svg'),
+      path.join(articleDir, 'first.svg'),
+    );
+    fs.copyFileSync(
+      path.join(process.cwd(), 'test-workspace', 'figures', 'diagram.svg'),
+      path.join(articleDir, 'second.svg'),
+    );
+    await processImages(
+      makeDocument(path.join(articleDir, 'first.md'), '![first](first.svg)'),
+      '1h',
+      false,
+      process.cwd(),
+    );
+    resetImageProcessorCache();
+    await processImages(
+      makeDocument(path.join(articleDir, 'second.md'), '![second](second.svg)'),
+      '1h',
+      false,
+      process.cwd(),
+    );
+    assert.equal(uploads.length, 2);
   } finally {
     fs.rmSync(articleDir, { recursive: true, force: true });
   }

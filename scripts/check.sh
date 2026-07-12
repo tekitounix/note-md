@@ -26,6 +26,11 @@ fi
 echo "==> package"
 npm run package
 
+if ! git diff --quiet -- docs/third-party-licenses.txt; then
+  echo "ERROR: docs/third-party-licenses.txt が現在の bundle と一致しません" >&2
+  exit 1
+fi
+
 echo "==> packaged file list"
 vsce_listing="$(npx --no-install vsce ls)"
 printf '%s\n' "$vsce_listing"
@@ -47,6 +52,7 @@ required_packaged_files=(
   "docs/format-reference.md"
   "docs/changelog.md"
   "docs/third-party-notices.md"
+  "docs/third-party-licenses.txt"
 )
 for required in "${required_packaged_files[@]}"; do
   if ! grep -Fxq "$required" <<<"$vsce_listing"; then

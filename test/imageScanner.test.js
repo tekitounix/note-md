@@ -52,3 +52,19 @@ test('image scanner ignores escaped markers, code examples, and HTML comments', 
     ['real-after-backslash.png', 'real.png'],
   );
 });
+
+test('image scanner canonicalizes destinations and follows CommonMark first definitions', () => {
+  const markdown = [
+    '![escaped](figures/a\\(final\\).png)',
+    '![entity](figures/a&amp;b.png)',
+    '<img src=figures/unquoted.png alt="raw">',
+    '![hero][same]',
+    '[same]: figures/first.png',
+    '[same]: figures/second.png',
+  ].join('\n');
+
+  assert.deepEqual(
+    scanImageReferences(markdown).map((reference) => reference.sourceRef),
+    ['figures/a(final).png', 'figures/a&b.png', 'figures/unquoted.png', 'figures/first.png'],
+  );
+});

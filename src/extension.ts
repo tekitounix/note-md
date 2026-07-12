@@ -188,11 +188,14 @@ function applyDiagnostics(
   collection: vscode.DiagnosticCollection,
 ): void {
   const cacheKey = `${doc.uri}:${doc.version}`;
+  for (const key of diagCache.keys()) {
+    if (key.startsWith(`${doc.uri}:`)) diagCache.delete(key);
+  }
   diagCache.set(cacheKey, results);
 
-  if (diagCache.size > 10) {
+  if (diagCache.size > 100) {
     const keys = [...diagCache.keys()];
-    for (let i = 0; i < keys.length - 10; i++) {
+    for (let i = 0; i < keys.length - 100; i++) {
       diagCache.delete(keys[i]);
     }
   }

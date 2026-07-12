@@ -5,21 +5,23 @@ const Module = require('node:module');
 const { setTimeout } = require('node:timers');
 
 let uploadCalls = 0;
+let enabledServiceNames = ['test-service'];
 const originalLoad = Module._load;
 Module._load = function (request, parent, isMain) {
   if (request === './services' && parent?.filename.endsWith('/out/upload.js')) {
     return {
       getEnabledUploadServiceNames() {
-        return new Set(['test-service']);
+        return new Set(enabledServiceNames);
       },
       getServiceManager() {
         return {
           async upload() {
             uploadCalls++;
+            const serviceName = enabledServiceNames[0];
             await new Promise((resolve) => setTimeout(resolve, 20));
             return {
               url: 'https://example.com/shared.png',
-              serviceName: 'test-service',
+              serviceName,
               expiresAt: Date.now() + 60_000,
             };
           },
@@ -41,7 +43,23 @@ const {
 
 test.beforeEach(() => {
   uploadCalls = 0;
+  enabledServiceNames = ['test-service'];
   resetUploadCache();
+});
+
+test('identical uploads are not shared across different enabled service scopes', async () => {
+  const registry = loadRegistry('/tmp/note-md-upload-service-scope');
+  const data = Buffer.from('same bytes');
+
+  enabledServiceNames = ['service-a'];
+  const first = uploadWithRegistry(data, 'a.png', 'a.png', registry, '1h');
+  enabledServiceNames = ['service-b'];
+  const second = uploadWithRegistry(data, 'b.png', 'b.png', registry, '1h');
+
+  await assert.rejects(first, /サービス設定が変更/);
+  const result = await second;
+  assert.equal(result.serviceName, 'service-b');
+  assert.equal(uploadCalls, 2);
 });
 
 test('loadUrlMap preserves multiple source refs for the same cached upload', () => {

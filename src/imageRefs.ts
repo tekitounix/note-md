@@ -1,8 +1,10 @@
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
+import { decodeHTML } from 'entities';
 
 const UNSUPPORTED_IMAGE_EXT_RE = /\.(svg|webp|bmp|tiff?)$/i;
+const MARKDOWN_ESCAPED_PUNCTUATION_RE = /\\([!"#$%&'()*+,\-./:;<=>?@[\]^_`{|}~])/g;
 
 export interface LocalImageRefInfo {
   sourceRef: string;
@@ -10,10 +12,19 @@ export interface LocalImageRefInfo {
   exists: boolean;
 }
 
+/** Decode the transformations Markdown applies to an image destination. */
+export function canonicalizeMarkdownImageRef(src: string): string {
+  return decodeHTML(src).replace(MARKDOWN_ESCAPED_PUNCTUATION_RE, '$1');
+}
+
+export function isExternalImageRef(src: string): boolean {
+  return /^(?:https?:|data:)/i.test(src.trim());
+}
+
 export function normalizeImageRef(src: string): string {
-  let decoded = src;
+  let decoded = src.replace(MARKDOWN_ESCAPED_PUNCTUATION_RE, '$1');
   try {
-    decoded = decodeURIComponent(src);
+    decoded = decodeURIComponent(decoded);
   } catch {
     // Invalid percent escapes are treated as literal filename characters.
   }

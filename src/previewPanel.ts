@@ -52,7 +52,6 @@ export class NotePreviewPanel {
   private uploadTimer: ReturnType<typeof setTimeout> | undefined;
   private uploading = false;
   private pendingUpload = false;
-  private consentGranted: boolean | undefined;
   /** Fingerprint of the last successfully processed image set. */
   private lastImageFingerprint: string | null = null;
   /** Monotonic counter — incremented on fullRender to reject stale Webview messages. */
@@ -230,11 +229,9 @@ export class NotePreviewPanel {
       return;
     }
 
-    // Check consent lazily (cached after first grant)
-    if (this.consentGranted === undefined) {
-      this.consentGranted = await ensureUploadConsent(this.context);
-    }
-    if (!this.consentGranted) return;
+    // Consent is keyed by the current service set in globalState. Always ask
+    // the consent module so configuration changes cannot reuse stale consent.
+    if (!(await ensureUploadConsent(this.context))) return;
 
     const editor = vscode.window.visibleTextEditors.find(
       (e) => e.document.uri.toString() === this.documentUri.toString(),
@@ -381,7 +378,6 @@ export class NotePreviewPanel {
         break;
       }
       case 'force-upload':
-        if (this.consentGranted === false) this.consentGranted = undefined;
         await this.runUpload(true);
         break;
       case 'open-cheatsheet': {

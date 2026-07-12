@@ -25,8 +25,8 @@ note-md rules
 |---|---|
 | 非対応書式 | `note/no-table`、`note/no-italic`、`note/no-inline-code`、`note/no-h456`、`note/no-html5`、`note/no-footnote`、`note/no-image-title` |
 | source 整合性 | `note/ruby-unmatched`、`note/ruby-nested`、`note/math-unmatched`、`note/math-display-unclosed` |
-| 画像 | `note/image-path-traversal`、`note/image-missing`、`note/image-oversized`、`note/image-unsupported`、`note/image-alt-empty` |
-| 構造・品質 | `note/multiple-h1`、`note/hr-variant`、`note/unclosed-html-tag`、`note/consecutive-blanks` |
+| 画像 | `note/image-path-traversal`、`note/image-missing`、`note/image-oversized`、`note/image-unsupported`、`note/image-unconvertible`、`note/image-external-unverified`、`note/image-alt-empty` |
+| 構造・品質 | `note/missing-h1`、`note/empty-h1`、`note/multiple-h1`、`note/hr-variant`、`note/unclosed-html-tag`、`note/consecutive-blanks` |
 
 `note/image-alt-empty` はアクセシビリティの hint である。装飾画像として空 ALT を意図する場合は、画像の直前に次を置く。
 
@@ -42,6 +42,8 @@ note-md rules
 
 ## parser と安全性
 
-フェンスコード、数式、前付け情報、明示的な除外対象は前処理で保護する。画像は `imageScanner.ts` が、空白や括弧を含む参照先、参照定義形式、HTML 画像、前付け情報のヘッダー画像を共通解析する。パスは `imageRefs.ts` が URL 復号と実体パス確認を適用し、シンボリックリンクを含め記事ディレクトリ外を拒否する。
+フェンスコード、数式、前付け情報、明示的な除外対象は前処理で保護する。画像は `imageScanner.ts` が、空白や括弧を含む参照先、参照定義形式、HTML 画像、前付け情報のヘッダー画像を共通解析する。パスは `imageRefs.ts` が Markdown escape、HTML entity、URL 復号と実体パス確認を適用し、シンボリックリンクを含め記事ディレクトリ外を拒否する。
+
+外部画像はローカル画像用のアップロード・配信元許可・内容形式の検証を通らないため警告する。公開前に利用者が到達性と note 側の表示を確認し、確認済みの例外だけを `note-ignore-next-line` で明示する。
 
 この検査は観測済みの note 挙動を支援するもので、note の内部仕様や将来の表示を保証しない。公開前は preview と note 側の最終表示を人間が確認する。

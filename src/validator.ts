@@ -1,7 +1,13 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
-import { normalizeImageRef, resolveLocalImageRef, resolveLocalImageRefAsync } from './imageRefs';
+import { decodeHTML } from 'entities';
+import {
+  isExternalImageRef,
+  normalizeImageRef,
+  resolveLocalImageRef,
+  resolveLocalImageRefAsync,
+} from './imageRefs';
 import { scanImageReferences, type MarkdownImageReference } from './imageScanner';
 
 // ─── Interfaces ─────────────────────────────────────────────
@@ -201,10 +207,6 @@ function imagePathMatches(ctx: ValidationContext, line: number): ImagePathMatch[
     }));
 }
 
-function isExternalImageRef(imgPath: string): boolean {
-  return /^https?:\/\//.test(imgPath) || imgPath.startsWith('data:');
-}
-
 function hasLocalPathEscape(imgPath: string): boolean {
   const slashNormalized = imgPath.replace(/\\/g, '/');
   return (
@@ -241,6 +243,60 @@ function diag(
     range: { line, column, length },
     fixes,
   };
+}
+
+interface H1Match {
+  line: number;
+  column: number;
+  length: number;
+  setextUnderlineLine?: number;
+  hasVisibleText: boolean;
+}
+
+function hasVisibleHeadingText(text: string): boolean {
+  return (
+    decodeHTML(text)
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+      .replace(/<[^>]+>/g, '')
+      .replace(/[*_~`]/g, '')
+      .trim().length > 0
+  );
+}
+
+function findH1Headings(ctx: ValidationContext): H1Match[] {
+  const headings: H1Match[] = [];
+  for (let i = 0; i < ctx.lines.length; i++) {
+    if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
+    const atx = ctx.lines[i].match(/^ {0,3}#(?:[ \t]+(.*)|$)/);
+    if (atx) {
+      const headingText = (atx[1] ?? '').replace(/[ \t]+#+[ \t]*$/, '');
+      headings.push({
+        line: i,
+        column: 0,
+        length: ctx.lines[i].length,
+        hasVisibleText: hasVisibleHeadingText(headingText),
+      });
+      continue;
+    }
+    if (
+      ctx.lines[i].trim() !== '' &&
+      i + 1 < ctx.lines.length &&
+      !ctx.isProtected(i + 1) &&
+      !ctx.isIgnored(i + 1) &&
+      /^ {0,3}=+\s*$/.test(ctx.lines[i + 1])
+    ) {
+      headings.push({
+        line: i,
+        column: 0,
+        length: ctx.lines[i].length,
+        setextUnderlineLine: i + 1,
+        hasVisibleText: hasVisibleHeadingText(ctx.lines[i]),
+      });
+      i++;
+    }
+  }
+  return headings;
 }
 
 // ─── Rule definitions ───────────────────────────────────────
@@ -455,36 +511,28 @@ const rules: ValidationRule[] = [
     trigger: 'change',
     check(ctx) {
       const results: NoteDiagnostic[] = [];
-      for (let i = 0; i < ctx.lines.length; i++) {
-        if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
-        const line = ctx.lines[i];
-        for (const m of line.matchAll(/!\[[^\]]*\]\([^)\s]+\s+"[^"]*"\)/g)) {
-          // Flag only the title portion
-          const titleMatch = m[0].match(/\s+"([^"]*)"\)$/);
-          if (titleMatch) {
-            const titleStart = m.index! + m[0].length - titleMatch[0].length;
-            results.push(
-              diag(
-                this,
-                '画像の title 属性は note.com では無視されます',
-                i,
-                titleStart,
-                titleMatch[0].length - 1, // -1 for closing )
-                [
-                  {
-                    title: 'title 属性を除去',
-                    edits: [
-                      {
-                        range: { line: i, column: titleStart, length: titleMatch[0].length - 1 },
-                        newText: '',
-                      },
-                    ],
-                  },
-                ],
-              ),
-            );
-          }
-        }
+      const seen = new Set<string>();
+      for (const image of ctx.imageRefs) {
+        const range = image.titleRange;
+        if (!range || ctx.isProtected(range.line) || ctx.isIgnored(image.useRange.line)) continue;
+        const key = `${range.line}:${range.column}:${range.length}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        results.push(
+          diag(
+            this,
+            '画像の title 属性は note.com では無視されます',
+            range.line,
+            range.column,
+            range.length,
+            [
+              {
+                title: 'title 属性を除去',
+                edits: [{ range, newText: '' }],
+              },
+            ],
+          ),
+        );
       }
       return results;
     },
@@ -499,18 +547,43 @@ const rules: ValidationRule[] = [
       const results: NoteDiagnostic[] = [];
       for (const image of ctx.imageRefs) {
         if (image.kind === 'frontmatter' || image.alt.trim() !== '') continue;
-        if (ctx.isProtected(image.line) || ctx.isIgnored(image.line)) continue;
+        if (ctx.isProtected(image.altRange.line) || ctx.isIgnored(image.altRange.line)) continue;
         results.push(
           diag(
             this,
             '画像の代替テキストを入力してください。装飾画像は note-ignore-next-line で明示できます',
+            image.altRange.line,
+            image.altRange.column,
+            image.altRange.length,
+          ),
+        );
+      }
+      return results;
+    },
+  },
+
+  // note/image-external-unverified — Remote URLs bypass the verified upload pipeline.
+  {
+    id: 'note/image-external-unverified',
+    severity: 'warning',
+    trigger: 'change',
+    check(ctx) {
+      return ctx.imageRefs
+        .filter(
+          (image) =>
+            isExternalImageRef(image.sourceRef) &&
+            !ctx.isProtected(image.useRange.line) &&
+            !ctx.isIgnored(image.useRange.line),
+        )
+        .map((image) =>
+          diag(
+            this,
+            '外部画像は到達性・Content-Type・note.com からの取得可否を自動検証できません',
             image.line,
             image.column,
             image.length,
           ),
         );
-      }
-      return results;
     },
   },
 
@@ -746,7 +819,7 @@ const rules: ValidationRule[] = [
     check(ctx) {
       if (!ctx.articleDir) return [];
       const results: NoteDiagnostic[] = [];
-      const autoConvert = /\.(svg|webp|avif|tiff?|bmp)$/i;
+      const autoConvert = /\.(svg|webp|tiff?|bmp)$/i;
 
       for (let i = 0; i < ctx.lines.length; i++) {
         if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
@@ -769,10 +842,62 @@ const rules: ValidationRule[] = [
     },
   },
 
+  // note/image-unconvertible — AVIF is not supported by the conversion pipeline.
+  {
+    id: 'note/image-unconvertible',
+    severity: 'error',
+    trigger: 'save',
+    check(ctx) {
+      const results: NoteDiagnostic[] = [];
+      for (let i = 0; i < ctx.lines.length; i++) {
+        if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
+        for (const img of imagePathMatches(ctx, i)) {
+          if (!isExternalImageRef(img.value) && /\.avif$/i.test(img.value)) {
+            results.push(
+              diag(
+                this,
+                'AVIF は自動変換できません。PNG または JPEG に変換してください',
+                i,
+                img.pathStart,
+                img.length,
+              ),
+            );
+          }
+        }
+      }
+      return results;
+    },
+  },
+
   // note/image-low-res — Under 620px width
   // Image metadata checks run in validateAsync() (async pipeline).
 
   // --- 4.4 Structural validation ---
+
+  // note/missing-h1 — An article needs exactly one copyable title.
+  {
+    id: 'note/missing-h1',
+    severity: 'error',
+    trigger: 'change',
+    check(ctx) {
+      if (findH1Headings(ctx).length > 0) return [];
+      return [diag(this, '記事タイトルとなる h1 見出しがありません', 0, 0, 0)];
+    },
+  },
+
+  // note/empty-h1 — A syntactic h1 that produces no copyable title is invalid.
+  {
+    id: 'note/empty-h1',
+    severity: 'error',
+    trigger: 'change',
+    check(ctx) {
+      return findH1Headings(ctx)
+        .filter((heading) => !heading.hasVisibleText)
+        .map((heading) =>
+          diag(this, 'h1 見出しのタイトルが空です', heading.line, heading.column, heading.length),
+        );
+    },
+  },
 
   // note/multiple-h1 — More than one h1
   {
@@ -780,37 +905,30 @@ const rules: ValidationRule[] = [
     severity: 'warning',
     trigger: 'change',
     check(ctx) {
-      const results: NoteDiagnostic[] = [];
-      let h1Count = 0;
-      for (let i = 0; i < ctx.lines.length; i++) {
-        if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
-        if (/^# /.test(ctx.lines[i])) {
-          h1Count++;
-          if (h1Count >= 2) {
-            results.push(
-              diag(
-                this,
-                'h1 見出しが複数あります（note.com ではタイトルは別途入力します）',
-                i,
-                0,
-                ctx.lines[i].length,
-                [
-                  {
-                    title: 'h2 (##) に変換',
-                    edits: [
-                      {
-                        range: { line: i, column: 0, length: 1 },
-                        newText: '##',
-                      },
-                    ],
+      return findH1Headings(ctx)
+        .slice(1)
+        .map((heading) => {
+          const edits: QuickFix['edits'] = heading.setextUnderlineLine
+            ? [
+                {
+                  range: {
+                    line: heading.setextUnderlineLine,
+                    column: 0,
+                    length: ctx.lines[heading.setextUnderlineLine].length,
                   },
-                ],
-              ),
-            );
-          }
-        }
-      }
-      return results;
+                  newText: '---',
+                },
+              ]
+            : [{ range: { line: heading.line, column: 0, length: 1 }, newText: '##' }];
+          return diag(
+            this,
+            'h1 見出しが複数あります（note.com ではタイトルは別途入力します）',
+            heading.line,
+            heading.column,
+            heading.length,
+            [{ title: 'h2 (##) に変換', edits }],
+          );
+        });
     },
   },
 

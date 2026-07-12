@@ -1,5 +1,6 @@
 import * as esbuild from 'esbuild';
 import { chmodSync, copyFileSync, cpSync, mkdirSync, rmSync } from 'fs';
+import { generateThirdPartyLicenses } from './scripts/generate-third-party-licenses.mjs';
 
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
@@ -16,6 +17,7 @@ const extensionBuildOptions = {
   sourcemap: !production,
   minify: production,
   treeShaking: true,
+  metafile: true,
 };
 
 /** @type {import('esbuild').BuildOptions} */
@@ -30,6 +32,7 @@ const cliBuildOptions = {
   sourcemap: !production,
   minify: production,
   treeShaking: true,
+  metafile: true,
 };
 
 /** @type {import('esbuild').BuildOptions} */
@@ -43,6 +46,7 @@ const webviewBuildOptions = {
   sourcemap: !production,
   minify: production,
   treeShaking: true,
+  metafile: true,
 };
 
 /** @type {import('esbuild').BuildOptions} */
@@ -56,6 +60,7 @@ const mermaidBuildOptions = {
   sourcemap: !production,
   minify: production,
   treeShaking: true,
+  metafile: true,
 };
 
 /** Copy WASM assets that cannot be bundled by esbuild. */
@@ -91,11 +96,20 @@ if (watch) {
   copyWasmAssets();
   console.log('Watching for changes...');
 } else {
-  await Promise.all([
+  const results = await Promise.all([
     esbuild.build(extensionBuildOptions),
     esbuild.build(cliBuildOptions),
     esbuild.build(webviewBuildOptions),
     esbuild.build(mermaidBuildOptions),
   ]);
   copyWasmAssets();
+  generateThirdPartyLicenses(
+    results.flatMap((result) => Object.keys(result.metafile.inputs)),
+    [
+      'node_modules/@resvg/resvg-wasm',
+      'node_modules/@jsquash/webp',
+      'node_modules/highlight.js',
+      'node_modules/katex',
+    ],
+  );
 }

@@ -253,6 +253,21 @@ test('note/no-image-title: provides quickfix to remove title', () => {
   assert.equal(diags[0].fixes[0].edits[0].newText, '');
 });
 
+test('note/no-image-title: handles angle paths, nesting, quotes, references, and HTML', () => {
+  const text = [
+    "![angle](<image path.png> 'title')",
+    '![nested](image_(final).png (caption))',
+    '![ref][hero]',
+    '[hero]: reference.png "reference title"',
+    '<img src=raw.png title="raw title">',
+  ].join('\n');
+  const diags = findByRule(validate(text, 'change'), 'note/no-image-title');
+  assert.equal(diags.length, 4);
+  for (const diagnostic of diags) {
+    assert.ok(!applyFirstFix(text, diagnostic).includes('undefined'));
+  }
+});
+
 test('note/image-alt-empty: suggests alternative text and supports explicit ignore', () => {
   assert.ok(findByRule(validate('![](image.png)', 'change'), 'note/image-alt-empty').length > 0);
   assert.ok(
@@ -261,6 +276,19 @@ test('note/image-alt-empty: suggests alternative text and supports explicit igno
       'note/image-alt-empty',
     ).length === 0,
   );
+});
+
+test('note/image-alt-empty: reference image ignore applies at the use site', () => {
+  const text = '<!-- note-ignore-next-line -->\n![][hero]\n[hero]: image.png';
+  assert.equal(findByRule(validate(text, 'change'), 'note/image-alt-empty').length, 0);
+});
+
+test('note/image-external-unverified: detects schemes case-insensitively', () => {
+  const diags = findByRule(
+    validate('# T\n\n![remote](HTTPS://example.com/image.png)', 'change'),
+    'note/image-external-unverified',
+  );
+  assert.equal(diags.length, 1);
 });
 
 test('image rules support angle-bracket spaces and reference-style images', () => {
@@ -416,6 +444,30 @@ test('note/image-path-traversal: detects symlink escaping articleDir when resolv
 // =====================================================================
 
 // ─── note/multiple-h1 ───────────────────────────────────────────
+
+test('note/missing-h1: rejects articles without a title', () => {
+  assert.equal(findByRule(validate('Body only', 'change'), 'note/missing-h1').length, 1);
+  assert.equal(findByRule(validate('# Title\n\nBody', 'change'), 'note/missing-h1').length, 0);
+  assert.equal(findByRule(validate('Title\n=====\n\nBody', 'change'), 'note/missing-h1').length, 0);
+});
+
+test('note/missing-h1: ignores headings in frontmatter and fenced code', () => {
+  const text = ['---', 'name: title', '---', '```', '# not a title', '```', 'Body'].join('\n');
+  assert.equal(findByRule(validate(text, 'change'), 'note/missing-h1').length, 1);
+});
+
+test('note/empty-h1: rejects titles with no copyable text', () => {
+  assert.equal(findByRule(validate('#', 'change'), 'note/empty-h1').length, 1);
+  assert.equal(findByRule(validate('# ![image](title.png)', 'change'), 'note/empty-h1').length, 1);
+  assert.equal(findByRule(validate('# **Title**', 'change'), 'note/empty-h1').length, 0);
+});
+
+test('note/multiple-h1: detects mixed ATX and Setext titles', () => {
+  const text = '# First\n\nSecond\n======';
+  const diags = findByRule(validate(text, 'change'), 'note/multiple-h1');
+  assert.equal(diags.length, 1);
+  assert.equal(applyFirstFix(text, diags[0]), '# First\n\nSecond\n---');
+});
 
 test('note/multiple-h1: detects multiple # headings', () => {
   const text = '# Title\n\nSome text\n\n# Another Title';
@@ -675,6 +727,12 @@ test('validateAsync runs image-missing, image-oversized, and image-unsupported c
   } finally {
     fs.rmSync(articleDir, { recursive: true, force: true });
   }
+});
+
+test('note/image-unconvertible rejects AVIF instead of promising conversion', () => {
+  const results = validate('# T\n\n![avif](photo.avif)', 'save', process.cwd());
+  assert.equal(findByRule(results, 'note/image-unconvertible').length, 1);
+  assert.equal(findByRule(results, 'note/image-unsupported').length, 0);
 });
 
 // =====================================================================

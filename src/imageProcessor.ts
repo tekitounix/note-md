@@ -51,10 +51,6 @@ let conversionCacheBytes = 0;
 export function resetImageProcessorCache(): void {
   conversionCache.clear();
   conversionCacheBytes = 0;
-  resvgInitialized = false;
-  resvgInitPromise = undefined;
-  webpInitialized = false;
-  webpInitPromise = undefined;
   svgFontBuffers = undefined;
 }
 
@@ -78,7 +74,12 @@ async function ensureResvgWasm(extensionPath: string): Promise<void> {
     await initWasm(wasmBuffer);
     resvgInitialized = true;
   })();
-  return resvgInitPromise;
+  try {
+    await resvgInitPromise;
+  } catch (error) {
+    resvgInitPromise = undefined;
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -99,7 +100,12 @@ async function ensureWebpWasm(extensionPath: string): Promise<void> {
     await init(wasmModule);
     webpInitialized = true;
   })();
-  return webpInitPromise;
+  try {
+    await webpInitPromise;
+  } catch (error) {
+    webpInitPromise = undefined;
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------

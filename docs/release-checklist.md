@@ -35,6 +35,7 @@
 - note-ignore-next-line が効く
 - Quick Fix が主要ルールで動く
 - `note-md check` の text / JSON / SARIF と終了コードが仕様どおり動く
+- h1 欠落、AVIF、外部画像、画像 title の各診断が Problems と CLI で一致する
 
 ## ドキュメント確認
 
@@ -52,7 +53,7 @@
 - 既定で有効なアップロードサービスが公開方針に合っている
 - 各アップロードサービスの接続性が極端に悪化していない
 - 削除済みサービスへの誤参照がコード・ドキュメントに残っていない
-- LICENSE と `docs/third-party-notices.md` が同梱されている
+- LICENSE、`docs/third-party-notices.md`、生成済みの `docs/third-party-licenses.txt` が同梱されている
 - プレビューが公開配信網へスクリプト、スタイル、書体を要求しない
 
 ## 公開前処理

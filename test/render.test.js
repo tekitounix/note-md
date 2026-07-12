@@ -179,6 +179,64 @@ test('renderBody extracts h1 as title and removes it from body', () => {
   assert.ok(result.bodyHtml.includes('Body content here.'));
 });
 
+test('renderBody decodes heading entities exactly once for title and TOC', () => {
+  const result = renderBody('# A & B < C\n\n## X & Y < Z');
+  assert.equal(result.titleHtml, 'A &amp; B &lt; C');
+  assert.match(result.tocHtml, />X &amp; Y &lt; Z<\/button>/);
+  assert.ok(!result.titleHtml.includes('&amp;amp;'));
+  assert.ok(!result.tocHtml.includes('&amp;amp;'));
+});
+
+test('renderBody resolves escaped and entity-containing local image paths', () => {
+  const result = renderBody(
+    '# T\n\n![escaped](figures/a\\(final\\).png)\n\n![entity](figures/a&b.png)',
+    {
+      urlMap: {
+        'figures/a(final).png': 'https://example.com/final.png',
+        'figures/a&b.png': 'https://example.com/amp.png',
+      },
+    },
+  );
+  assert.match(result.bodyHtml, /src="https:\/\/example\.com\/final\.png"/);
+  assert.match(result.bodyHtml, /src="https:\/\/example\.com\/amp\.png"/);
+});
+
+test('renderBody uses the first reference definition and resolves unquoted HTML images', () => {
+  const result = renderBody(
+    [
+      '# T',
+      '',
+      '![hero][same]',
+      '',
+      '[same]: figures/first.png',
+      '[same]: figures/second.png',
+      '',
+      '<img src=figures/raw.png alt="raw">',
+    ].join('\n'),
+    {
+      urlMap: {
+        'figures/first.png': 'https://example.com/first.png',
+        'figures/raw.png': 'https://example.com/raw.png',
+      },
+    },
+  );
+  assert.match(result.bodyHtml, /src="https:\/\/example\.com\/first\.png"/);
+  assert.match(result.bodyHtml, /src="https:\/\/example\.com\/raw\.png"/);
+  assert.ok(!result.bodyHtml.includes('second.png'));
+});
+
+test('renderBody preserves external frontmatter images in local Webviews', () => {
+  const result = renderBody('---\nheader: HTTPS://example.com/header.png\n---\n# T', {
+    articleDir: process.cwd(),
+    baseUri: 'vscode-resource://article',
+  });
+  assert.match(result.headerHtml, /src="HTTPS:\/\/example\.com\/header\.png"/);
+});
+
+test('countNoteChars excludes a Setext h1 title', () => {
+  assert.equal(countNoteChars('Title\n=====\n\nBody'), 4);
+});
+
 test('renderBody resolves image src with urlMap', () => {
   const md = '# T\n\n![photo](figures/photo.png)';
   const opts = {

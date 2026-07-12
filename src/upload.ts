@@ -143,7 +143,8 @@ export async function uploadWithRegistry(
   }
 
   // Upload via ServiceManager (handles health check + fallback)
-  const inFlightKey = `${hash}:${expiry}`;
+  const serviceScope = [...getEnabledUploadServiceNames()].sort().join('|');
+  const inFlightKey = `${hash}:${expiry}:${serviceScope}`;
   let uploadPromise = inFlightUploads.get(inFlightKey);
   if (!uploadPromise) {
     uploadPromise = getServiceManager().upload(data, fileName, expiry);
@@ -158,6 +159,10 @@ export async function uploadWithRegistry(
     }
   }
 
+  if (!getEnabledUploadServiceNames().has(outcome.serviceName)) {
+    throw new Error('アップロード中に有効なサービス設定が変更されました。再実行してください');
+  }
+
   const sharedEntry = cache[hash];
   if (sharedEntry?.url === outcome.url) {
     rememberSourceRef(sharedEntry, sourceRef);
@@ -165,7 +170,7 @@ export async function uploadWithRegistry(
     cache[hash] = {
       url: outcome.url,
       sourceRefs: [normalizeImageRef(sourceRef)],
-      uploadedAt: now,
+      uploadedAt: Date.now(),
       expiresAt: outcome.expiresAt,
       serviceName: outcome.serviceName,
     };

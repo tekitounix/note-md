@@ -1,4 +1,11 @@
 import { parseFrontmatter } from './frontmatter';
+import { canonicalizeMarkdownImageRef, isExternalImageRef } from './imageRefs';
+
+export interface ImageSourceRange {
+  line: number;
+  column: number;
+  length: number;
+}
 
 export interface MarkdownImageReference {
   sourceRef: string;
@@ -7,6 +14,9 @@ export interface MarkdownImageReference {
   column: number;
   length: number;
   kind: 'frontmatter' | 'inline' | 'reference' | 'html';
+  altRange: ImageSourceRange;
+  useRange: ImageSourceRange;
+  titleRange?: ImageSourceRange;
 }
 
 interface ReferenceDefinition {
@@ -14,6 +24,7 @@ interface ReferenceDefinition {
   line: number;
   column: number;
   length: number;
+  titleRange?: ImageSourceRange;
 }
 
 function normalizeLabel(label: string): string {
@@ -34,17 +45,20 @@ function findClosingBracket(line: string, start: number): number {
 function parseInlineDestination(
   line: string,
   openParen: number,
-): { value: string; column: number; length: number } | null {
+): { value: string; column: number; length: number; titleRange?: ImageSourceRange } | null {
   let cursor = openParen + 1;
   while (line[cursor] === ' ' || line[cursor] === '\t') cursor++;
+  let destinationEnd: number;
   if (line[cursor] === '<') {
     const end = line.indexOf('>', cursor + 1);
     if (end < 0) return null;
-    return {
+    const result = {
       value: line.slice(cursor + 1, end),
       column: cursor + 1,
       length: end - cursor - 1,
     };
+    destinationEnd = end + 1;
+    return { ...result, titleRange: parseOptionalTitle(line, destinationEnd) };
   }
 
   const start = cursor;
@@ -67,7 +81,34 @@ function parseInlineDestination(
     if ((char === ' ' || char === '\t') && nested === 0) break;
   }
   if (cursor === start) return null;
-  return { value: line.slice(start, cursor), column: start, length: cursor - start };
+  destinationEnd = cursor;
+  return {
+    value: line.slice(start, cursor),
+    column: start,
+    length: cursor - start,
+    titleRange: parseOptionalTitle(line, destinationEnd),
+  };
+}
+
+function parseOptionalTitle(line: string, destinationEnd: number): ImageSourceRange | undefined {
+  const whitespaceStart = destinationEnd;
+  let cursor = destinationEnd;
+  while (line[cursor] === ' ' || line[cursor] === '\t') cursor++;
+  if (cursor === whitespaceStart) return undefined;
+  const opener = line[cursor];
+  const closer = opener === '(' ? ')' : opener;
+  if (opener !== '"' && opener !== "'" && opener !== '(') return undefined;
+  cursor++;
+  for (; cursor < line.length; cursor++) {
+    if (line[cursor] === '\\') {
+      cursor++;
+      continue;
+    }
+    if (line[cursor] === closer) {
+      return { line: 0, column: whitespaceStart, length: cursor + 1 - whitespaceStart };
+    }
+  }
+  return undefined;
 }
 
 function findFencedLines(lines: string[]): boolean[] {
@@ -148,11 +189,15 @@ function collectDefinitions(
     const rawValue = match[2] ? `<${match[2]}>` : match[3];
     const rawColumn = lines[i].indexOf(rawValue, match[0].indexOf(':') + 1);
     const column = rawColumn + (match[2] ? 1 : 0);
-    definitions.set(normalizeLabel(match[1]), {
-      sourceRef,
+    const label = normalizeLabel(match[1]);
+    if (definitions.has(label)) continue; // CommonMark: the first definition wins.
+    const titleRange = parseOptionalTitle(lines[i], rawColumn + rawValue.length);
+    definitions.set(label, {
+      sourceRef: canonicalizeMarkdownImageRef(sourceRef),
       line: i + lineOffset,
       column,
       length: sourceRef.length,
+      titleRange: titleRange ? { ...titleRange, line: i + lineOffset } : undefined,
     });
   }
   return definitions;
@@ -176,6 +221,12 @@ export function scanImageReferences(markdown: string): MarkdownImageReference[] 
       column: Math.max(column, 0),
       length: parsed.data.header.length,
       kind: 'frontmatter',
+      altRange: { line: Math.max(headerLine, 0), column: 0, length: 0 },
+      useRange: {
+        line: Math.max(headerLine, 0),
+        column: Math.max(column, 0),
+        length: parsed.data.header.length,
+      },
     });
   }
 
@@ -189,17 +240,33 @@ export function scanImageReferences(markdown: string): MarkdownImageReference[] 
     const line = scanLines[lineIndex];
     const sourceLine = lineIndex + parsed.lineCount;
 
-    for (const htmlMatch of line.matchAll(/<img\s[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi)) {
-      const sourceRef = htmlMatch[1];
-      const column = htmlMatch.index! + htmlMatch[0].indexOf(sourceRef);
+    for (const htmlMatch of line.matchAll(
+      /<img\s[^>]*\bsrc\s*=\s*(?:["']([^"']+)["']|([^\s>]+))[^>]*>/gi,
+    )) {
+      const rawSourceRef = htmlMatch[1] ?? htmlMatch[2];
+      const sourceRef = canonicalizeMarkdownImageRef(rawSourceRef);
+      const column = htmlMatch.index! + htmlMatch[0].indexOf(rawSourceRef);
       const altMatch = htmlMatch[0].match(/\balt\s*=\s*["']([^"']*)["']/i);
+      const titleMatch = htmlMatch[0].match(/\s+title\s*=\s*(?:["'][^"']*["']|[^\s>]+)/i);
+      const altColumn = altMatch
+        ? htmlMatch.index! + htmlMatch[0].indexOf(altMatch[1], altMatch.index)
+        : htmlMatch.index!;
       references.push({
         sourceRef,
         alt: altMatch?.[1] ?? '',
         line: sourceLine,
         column,
-        length: sourceRef.length,
+        length: rawSourceRef.length,
         kind: 'html',
+        altRange: { line: sourceLine, column: altColumn, length: altMatch?.[1].length ?? 0 },
+        useRange: { line: sourceLine, column: htmlMatch.index!, length: htmlMatch[0].length },
+        titleRange: titleMatch
+          ? {
+              line: sourceLine,
+              column: htmlMatch.index! + titleMatch.index!,
+              length: titleMatch[0].length,
+            }
+          : undefined,
       });
     }
 
@@ -218,12 +285,17 @@ export function scanImageReferences(markdown: string): MarkdownImageReference[] 
         const destination = parseInlineDestination(line, altEnd + 1);
         if (destination) {
           references.push({
-            sourceRef: destination.value,
+            sourceRef: canonicalizeMarkdownImageRef(destination.value),
             alt,
             line: sourceLine,
             column: destination.column,
             length: destination.length,
             kind: 'inline',
+            altRange: { line: sourceLine, column: cursor + 2, length: alt.length },
+            useRange: { line: sourceLine, column: cursor, length: altEnd + 1 - cursor },
+            titleRange: destination.titleRange
+              ? { ...destination.titleRange, line: sourceLine }
+              : undefined,
           });
         }
       } else {
@@ -234,7 +306,13 @@ export function scanImageReferences(markdown: string): MarkdownImageReference[] 
         }
         const definition = definitions.get(normalizeLabel(label));
         if (definition) {
-          references.push({ ...definition, alt, kind: 'reference' });
+          references.push({
+            ...definition,
+            alt,
+            kind: 'reference',
+            altRange: { line: sourceLine, column: cursor + 2, length: alt.length },
+            useRange: { line: sourceLine, column: cursor, length: altEnd + 1 - cursor },
+          });
         }
       }
       cursor = altEnd + 1;
@@ -251,7 +329,7 @@ export function categorizeImageReferences(markdown: string): {
   const local: string[] = [];
   const global: string[] = [];
   for (const reference of scanImageReferences(markdown)) {
-    if (/^https?:\/\//.test(reference.sourceRef) || reference.sourceRef.startsWith('data:')) {
+    if (isExternalImageRef(reference.sourceRef)) {
       global.push(reference.sourceRef);
     } else {
       local.push(reference.sourceRef);

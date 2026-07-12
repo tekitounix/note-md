@@ -95,29 +95,13 @@ function assertHttps(name: string, body: string, allowedDomains?: string[]): str
 }
 
 async function verifyServedImage(name: string, url: string): Promise<void> {
-  const tryFetch = async (method: 'HEAD' | 'GET'): Promise<Response> =>
-    fetch(url, {
-      method,
-      headers: {
-        Origin: 'https://note.com',
-        ...(method === 'GET' ? { Range: 'bytes=0-0' } : {}),
-      },
-      signal: AbortSignal.timeout(VERIFY_TIMEOUT),
-    });
-
-  let method: 'HEAD' | 'GET' = 'HEAD';
-  let response = await tryFetch(method);
-  if (!response.ok || response.status === 405) {
-    method = 'GET';
-    response = await tryFetch(method);
-  }
-
-  let verificationError = servedImageVerificationError(name, response);
-  if (verificationError && method === 'HEAD') {
-    response = await tryFetch('GET');
-    verificationError = servedImageVerificationError(name, response);
-  }
-
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { Origin: 'https://note.com', Range: 'bytes=0-0' },
+    signal: AbortSignal.timeout(VERIFY_TIMEOUT),
+  });
+  const verificationError = servedImageVerificationError(name, response);
+  await response.body?.cancel();
   if (verificationError) throw verificationError;
 }
 
@@ -127,13 +111,7 @@ function servedImageVerificationError(name: string, response: Response): Error |
   }
 
   const cors = response.headers.get('access-control-allow-origin') ?? '';
-  if (
-    cors !== '*' &&
-    !cors
-      .split(',')
-      .map((s) => s.trim())
-      .includes('https://note.com')
-  ) {
+  if (cors.trim() !== '*' && cors.trim() !== 'https://note.com') {
     return new Error(`${name}: 配信 URL が note.com から取得できる CORS を返しません`);
   }
 
@@ -263,9 +241,7 @@ export class ServiceManager {
   }
 
   private configKey(): string {
-    return this.configuredServices()
-      .map((svc) => svc.name)
-      .join('|');
+    return [...configuredServiceNameSet()].sort().join('|');
   }
 
   /**
@@ -277,13 +253,19 @@ export class ServiceManager {
   initialize(): Promise<void> {
     const configKey = this.configKey();
     if (!this.initPromise || this.initializedConfigKey !== configKey) {
+      const configured = this.configuredServices();
       this.initializedConfigKey = configKey;
-      this.initPromise = this.doInitialize();
+      this.initPromise = this.doInitialize(configured, configKey);
     }
-    return this.initPromise;
+    const pending = this.initPromise;
+    return pending.then(() => {
+      if (pending !== this.initPromise || this.initializedConfigKey !== this.configKey()) {
+        return this.initialize();
+      }
+    });
   }
 
-  private async doInitialize(): Promise<void> {
+  private async doInitialize(configured: UploadService[], configKey: string): Promise<void> {
     // Warn about unrecognized service names in settings
     const config = vscode.workspace.getConfiguration('note-md');
     const settingNames =
@@ -297,9 +279,8 @@ export class ServiceManager {
       );
     }
 
-    const configured = this.configuredServices();
     if (configured.length === 0) {
-      this.healthy = [];
+      if (this.configKey() === configKey) this.healthy = [];
       return;
     }
 
@@ -307,12 +288,17 @@ export class ServiceManager {
       configured.map(async (s) => ({ s, ok: await s.healthCheck() })),
     );
 
-    this.healthy = results
+    const healthy = results
       .filter(
         (r): r is PromiseFulfilledResult<{ s: UploadService; ok: boolean }> =>
           r.status === 'fulfilled' && r.value.ok,
       )
       .map((r) => r.value.s);
+
+    // A settings change may have started a newer initialization while these
+    // health checks were pending. Never let the stale result overwrite it.
+    if (this.configKey() !== configKey) return;
+    this.healthy = healthy;
 
     if (this.healthy.length === 0) {
       vscode.window.showWarningMessage('note 用に有効化されたアップロードサービスへ接続できません');
@@ -336,7 +322,9 @@ export class ServiceManager {
 
     // Prefer healthy services; fall back to trying all if list is empty
     const configured = this.configuredServices();
-    const candidates = this.healthy.length > 0 ? [...this.healthy] : [...configured];
+    const configuredSet = new Set(configured);
+    const currentlyHealthy = this.healthy.filter((service) => configuredSet.has(service));
+    const candidates = currentlyHealthy.length > 0 ? currentlyHealthy : [...configured];
     const errors: string[] = [];
 
     if (candidates.length === 0) {
@@ -366,7 +354,8 @@ export class ServiceManager {
 
   /** Names of currently healthy services. */
   get healthyNames(): string[] {
-    return this.healthy.map((s) => s.name);
+    const configured = new Set(this.configuredServices());
+    return this.healthy.filter((service) => configured.has(service)).map((s) => s.name);
   }
 }
 

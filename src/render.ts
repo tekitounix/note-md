@@ -12,7 +12,13 @@
 
 import MarkdownIt from 'markdown-it';
 import sanitizeHtml from 'sanitize-html';
-import { resolveLocalImageRef, resolveMappedImageUrl } from './imageRefs';
+import { decodeHTML } from 'entities';
+import {
+  canonicalizeMarkdownImageRef,
+  isExternalImageRef,
+  resolveLocalImageRef,
+  resolveMappedImageUrl,
+} from './imageRefs';
 import { parseFrontmatter } from './frontmatter';
 
 const SANITIZE_OPTIONS: sanitizeHtml.IOptions = {
@@ -161,10 +167,14 @@ function extractToc(html: string): TocItem[] {
     items.push({
       level: parseInt(m[1].slice(1)),
       id: m[2],
-      text: m[3].replace(/<[^>]+>/g, '').trim(),
+      text: htmlText(m[3]),
     });
   }
   return items;
+}
+
+function htmlText(html: string): string {
+  return decodeHTML(html.replace(/<[^>]+>/g, '')).trim();
 }
 
 function buildTocHtml(items: TocItem[]): string {
@@ -213,9 +223,11 @@ function resolveImageSrcs(
   baseUri?: string,
   articleDir?: string,
 ): string {
-  return html.replace(/src="(?!https?:|data:|#)([^"]+)"/g, (_match, src: string) => {
+  return html.replace(/src="([^"]+)"/g, (match, serializedSrc: string) => {
+    const decodedSrc = canonicalizeMarkdownImageRef(serializedSrc);
+    if (isExternalImageRef(decodedSrc) || decodedSrc.startsWith('#')) return match;
     // Normalize backslashes for Windows paths in Markdown (e.g. images\photo.png)
-    const normalizedSrc = src.replace(/\\/g, '/');
+    const normalizedSrc = decodedSrc.replace(/\\/g, '/');
     const resolved = articleDir ? resolveLocalImageRef(articleDir, normalizedSrc) : null;
     const sourceRef = resolved?.sourceRef ?? normalizedSrc.replace(/^(?:\.\/)+/, '');
     const mapped = resolveMappedImageUrl(urlMap, sourceRef);
@@ -241,11 +253,14 @@ function resolveImageSrcs(
 export function countNoteChars(markdown: string): number {
   const lines = markdown.split('\n');
 
-  // Skip title (first h1 heading) and any following blank lines
+  // Skip title (first ATX or Setext h1 heading) and following blank lines.
   let startIdx = 0;
   for (let i = 0; i < lines.length; i++) {
-    if (/^#\s/.test(lines[i])) {
-      startIdx = i + 1;
+    const isAtxH1 = /^ {0,3}#(?:[ \t]+|$)/.test(lines[i]);
+    const isSetextH1 =
+      lines[i].trim() !== '' && i + 1 < lines.length && /^ {0,3}=+\s*$/.test(lines[i + 1]);
+    if (isAtxH1 || isSetextH1) {
+      startIdx = i + (isSetextH1 ? 2 : 1);
       while (startIdx < lines.length && lines[startIdx].trim() === '') startIdx++;
       break;
     }
@@ -414,7 +429,7 @@ function renderContent(
   // Extract & remove title (first h1)
   let title = '';
   body = body.replace(/<h1[^>]*>(.*?)<\/h1>/s, (_, t: string) => {
-    title = t.replace(/<[^>]+>/g, '').trim();
+    title = htmlText(t);
     return '';
   });
 
@@ -434,12 +449,12 @@ function renderContent(
     const mapped = resolveMappedImageUrl(opts?.urlMap, headerImagePath);
     if (mapped) {
       headerImagePath = mapped;
-    } else if (opts?.baseUri && opts.articleDir) {
+    } else if (!isExternalImageRef(headerImagePath) && opts?.baseUri && opts.articleDir) {
       const resolved = resolveLocalImageRef(opts.articleDir, headerImagePath);
       headerImagePath = resolved?.exists
         ? `${opts.baseUri}/${encodeWebviewPath(resolved.sourceRef)}`
         : undefined;
-    } else if (opts?.baseUri) {
+    } else if (!isExternalImageRef(headerImagePath) && opts?.baseUri) {
       headerImagePath = `${opts.baseUri}/${encodeWebviewPath(headerImagePath.replace(/\\/g, '/'))}`;
     }
   }
