@@ -15,15 +15,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           path: note-md
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: note-md/package-lock.json
-      - run: sudo apt-get update && sudo apt-get install -y xvfb
+      - name: Install local-gate tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck xvfb
+          archive="actionlint_1.7.12_linux_amd64.tar.gz"
+          curl --fail --location --silent --show-error \
+            --output "/tmp/$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/$archive"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  /tmp/$archive" \
+            | sha256sum --check --strict
+          tar -xzf "/tmp/$archive" -C /tmp actionlint
+          sudo install -m 0755 /tmp/actionlint /usr/local/bin/actionlint
         working-directory: .
       - run: ./scripts/check.sh

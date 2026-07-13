@@ -1,5 +1,6 @@
 import * as esbuild from 'esbuild';
-import { chmodSync, copyFileSync, cpSync, mkdirSync, rmSync } from 'fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, renameSync, rmSync } from 'fs';
+import path from 'node:path';
 import { generateThirdPartyLicenses } from './scripts/generate-third-party-licenses.mjs';
 
 const production = process.argv.includes('--production');
@@ -64,13 +65,14 @@ const mermaidBuildOptions = {
 };
 
 /** Copy WASM assets that cannot be bundled by esbuild. */
-function copyWasmAssets() {
-  mkdirSync('dist', { recursive: true });
+function copyWasmAssets(outputDir = 'dist') {
+  mkdirSync(outputDir, { recursive: true });
   const assets = [
-    ['node_modules/@resvg/resvg-wasm/index_bg.wasm', 'dist/resvg.wasm'],
-    ['node_modules/@jsquash/webp/codec/dec/webp_dec.wasm', 'dist/webp_dec.wasm'],
+    ['node_modules/@resvg/resvg-wasm/index_bg.wasm', 'resvg.wasm'],
+    ['node_modules/@jsquash/webp/codec/dec/webp_dec.wasm', 'webp_dec.wasm'],
   ];
-  for (const [src, dest] of assets) {
+  for (const [src, fileName] of assets) {
+    const dest = path.join(outputDir, fileName);
     try {
       copyFileSync(src, dest);
     } catch (e) {
@@ -78,15 +80,36 @@ function copyWasmAssets() {
     }
   }
 
-  copyFileSync('node_modules/highlight.js/styles/atom-one-dark.min.css', 'dist/highlight.css');
-  copyFileSync('node_modules/katex/dist/katex.min.css', 'dist/katex.css');
-  cpSync('node_modules/katex/dist/fonts', 'dist/fonts', { recursive: true });
-  chmodSync('dist/cli.js', 0o755);
+  copyFileSync(
+    'node_modules/highlight.js/styles/atom-one-dark.min.css',
+    path.join(outputDir, 'highlight.css'),
+  );
+  copyFileSync('node_modules/katex/dist/katex.min.css', path.join(outputDir, 'katex.css'));
+  cpSync('node_modules/katex/dist/fonts', path.join(outputDir, 'fonts'), { recursive: true });
+  chmodSync(path.join(outputDir, 'cli.js'), 0o755);
 }
 
-rmSync('dist', { recursive: true, force: true });
+function optionsForOutputDir(options, outputDir) {
+  return { ...options, outfile: path.join(outputDir, path.basename(options.outfile)) };
+}
+
+function replaceDistAtomically(buildDir) {
+  const backupDir = `.dist-backup-${process.pid}`;
+  rmSync(backupDir, { recursive: true, force: true });
+  const hadPreviousDist = existsSync('dist');
+  if (hadPreviousDist) renameSync('dist', backupDir);
+  try {
+    renameSync(buildDir, 'dist');
+    rmSync(backupDir, { recursive: true, force: true });
+  } catch (error) {
+    rmSync('dist', { recursive: true, force: true });
+    if (hadPreviousDist && existsSync(backupDir)) renameSync(backupDir, 'dist');
+    throw error;
+  }
+}
 
 if (watch) {
+  rmSync('dist', { recursive: true, force: true });
   const contexts = await Promise.all(
     [extensionBuildOptions, cliBuildOptions, webviewBuildOptions, mermaidBuildOptions].map(
       (options) => esbuild.context(options),
@@ -96,20 +119,31 @@ if (watch) {
   copyWasmAssets();
   console.log('Watching for changes...');
 } else {
-  const results = await Promise.all([
-    esbuild.build(extensionBuildOptions),
-    esbuild.build(cliBuildOptions),
-    esbuild.build(webviewBuildOptions),
-    esbuild.build(mermaidBuildOptions),
-  ]);
-  copyWasmAssets();
-  generateThirdPartyLicenses(
-    results.flatMap((result) => Object.keys(result.metafile.inputs)),
-    [
-      'node_modules/@resvg/resvg-wasm',
-      'node_modules/@jsquash/webp',
-      'node_modules/highlight.js',
-      'node_modules/katex',
-    ],
-  );
+  const buildDir = `.dist-build-${process.pid}`;
+  rmSync(buildDir, { recursive: true, force: true });
+  const buildOptions = [
+    extensionBuildOptions,
+    cliBuildOptions,
+    webviewBuildOptions,
+    mermaidBuildOptions,
+  ].map((options) => optionsForOutputDir(options, buildDir));
+
+  let results;
+  try {
+    results = await Promise.all(buildOptions.map((options) => esbuild.build(options)));
+    copyWasmAssets(buildDir);
+    generateThirdPartyLicenses(
+      results.flatMap((result) => Object.keys(result.metafile.inputs)),
+      [
+        'node_modules/@resvg/resvg-wasm',
+        'node_modules/@jsquash/webp',
+        'node_modules/highlight.js',
+        'node_modules/katex',
+      ],
+    );
+    replaceDistAtomically(buildDir);
+  } catch (error) {
+    rmSync(buildDir, { recursive: true, force: true });
+    throw error;
+  }
 }

@@ -16,6 +16,7 @@ import { decodeHTML } from 'entities';
 import {
   canonicalizeMarkdownImageRef,
   isExternalImageRef,
+  isSafeExternalImageRef,
   resolveLocalImageRef,
   resolveMappedImageUrl,
 } from './imageRefs';
@@ -69,7 +70,7 @@ const SANITIZE_OPTIONS: sanitizeHtml.IOptions = {
     p: ['style'],
     span: ['style'],
   },
-  allowedSchemes: ['http', 'https', 'mailto'],
+  allowedSchemes: ['https', 'mailto'],
   allowedSchemesByTag: {
     img: ['http', 'https', 'data'],
   },
@@ -78,6 +79,7 @@ const SANITIZE_OPTIONS: sanitizeHtml.IOptions = {
       'text-align': [/^(left|right|center)$/],
     },
   },
+  allowProtocolRelative: false,
   disallowedTagsMode: 'discard',
 };
 
@@ -178,15 +180,10 @@ function htmlText(html: string): string {
 }
 
 function buildTocHtml(items: TocItem[]): string {
-  if (items.length === 0) return '';
-  const lis = items
-    .map((item) => {
-      const t = escHtml(item.text);
-      return `      <li class="side-toc__item" data-level="h${item.level}"><button class="side-toc__link" data-href="#${item.id}">${t}</button></li>`;
-    })
-    .join('\n');
+  const lis = buildTocListHtml(items);
+  const hidden = items.length === 0 ? ' hidden' : '';
   return `
-  <aside class="side-toc" id="side-toc">
+  <aside class="side-toc" id="side-toc"${hidden}>
     <div class="side-toc__header" id="side-toc-toggle">
       <span class="side-toc__arrow">◀</span> 目次
     </div>
@@ -194,6 +191,15 @@ function buildTocHtml(items: TocItem[]): string {
 ${lis}
     </ol>
   </aside>`;
+}
+
+function buildTocListHtml(items: TocItem[]): string {
+  return items
+    .map((item) => {
+      const t = escHtml(item.text);
+      return `      <li class="side-toc__item" data-level="h${item.level}"><button class="side-toc__link" data-href="#${item.id}">${t}</button></li>`;
+    })
+    .join('\n');
 }
 
 function escHtml(s: string): string {
@@ -213,6 +219,19 @@ function encodeWebviewPath(sourceRef: string): string {
   return sourceRef.split('/').map(encodeURIComponent).join('/');
 }
 
+function safeUrlMap(urlMap?: Record<string, string>): Record<string, string> {
+  if (!urlMap) return {};
+  return Object.fromEntries(
+    Object.entries(urlMap).filter(([, value]) => isSafeExternalImageRef(value)),
+  );
+}
+
+function isSafeRenderedImageSrc(src: string, baseUri?: string): boolean {
+  if (isSafeExternalImageRef(src)) return true;
+  if (baseUri && (src === baseUri || src.startsWith(`${baseUri}/`))) return true;
+  return !/^[a-z][a-z0-9+.-]*:/i.test(src) && !src.startsWith('//') && !src.startsWith('/');
+}
+
 /**
  * Resolve image src attributes — prefer uploaded URL from urlMap,
  * fall back to baseUri for local preview.
@@ -225,7 +244,9 @@ function resolveImageSrcs(
 ): string {
   return html.replace(/src="([^"]+)"/g, (match, serializedSrc: string) => {
     const decodedSrc = canonicalizeMarkdownImageRef(serializedSrc);
-    if (isExternalImageRef(decodedSrc) || decodedSrc.startsWith('#')) return match;
+    if (isExternalImageRef(decodedSrc) || decodedSrc.startsWith('#')) {
+      return isSafeExternalImageRef(decodedSrc) ? match : 'src=""';
+    }
     // Normalize backslashes for Windows paths in Markdown (e.g. images\photo.png)
     const normalizedSrc = decodedSrc.replace(/\\/g, '/');
     const resolved = articleDir ? resolveLocalImageRef(articleDir, normalizedSrc) : null;
@@ -234,7 +255,9 @@ function resolveImageSrcs(
     // Always preserve original relative path so resolveBodyImages can re-resolve
     // after url-map-updated arrives (e.g. TIFF/WebP converted async).
     const dataSrc = ` data-original-src="${escHtml(sourceRef)}"`;
-    if (mapped) return `src="${escHtml(mapped)}"${dataSrc}`;
+    if (mapped && isSafeExternalImageRef(mapped)) {
+      return `src="${escHtml(mapped)}"${dataSrc}`;
+    }
     // Fall back to local webview URI
     if (baseUri && resolved?.exists) {
       return `src="${baseUri}/${encodeWebviewPath(resolved.sourceRef)}"${dataSrc}`;
@@ -401,6 +424,7 @@ function renderContent(
   title: string;
   body: string;
   tocHtml: string;
+  tocListHtml: string;
   urlMapJson: string;
   charCount: number;
   headerImagePath?: string;
@@ -440,15 +464,18 @@ function renderContent(
 
   body = stripBlockGaps(body);
 
-  const tocHtml = buildTocHtml(extractToc(body));
+  const tocItems = extractToc(body);
+  const tocHtml = buildTocHtml(tocItems);
+  const tocListHtml = buildTocListHtml(tocItems);
 
-  const urlMapJson = opts?.urlMap ? JSON.stringify(opts.urlMap).replace(/</g, '\\u003c') : '{}';
+  const sanitizedUrlMap = safeUrlMap(opts?.urlMap);
+  const urlMapJson = JSON.stringify(sanitizedUrlMap).replace(/</g, '\\u003c');
 
   // Resolve eyecatch image path from frontmatter (note-md.eyecatch, then legacy header)
   let headerImagePath = resolveEyecatch(parsed);
   if (headerImagePath) {
     const mapped = resolveMappedImageUrl(opts?.urlMap, headerImagePath);
-    if (mapped) {
+    if (mapped && isSafeExternalImageRef(mapped)) {
       headerImagePath = mapped;
     } else if (!isExternalImageRef(headerImagePath) && opts?.baseUri && opts.articleDir) {
       const resolved = resolveLocalImageRef(opts.articleDir, headerImagePath);
@@ -457,6 +484,11 @@ function renderContent(
         : undefined;
     } else if (!isExternalImageRef(headerImagePath) && opts?.baseUri) {
       headerImagePath = `${opts.baseUri}/${encodeWebviewPath(headerImagePath.replace(/\\/g, '/'))}`;
+    } else if (isExternalImageRef(headerImagePath)) {
+      headerImagePath = isSafeExternalImageRef(headerImagePath) ? headerImagePath : undefined;
+    }
+    if (headerImagePath && !isSafeRenderedImageSrc(headerImagePath, opts?.baseUri)) {
+      headerImagePath = undefined;
     }
   }
 
@@ -464,6 +496,7 @@ function renderContent(
     title,
     body,
     tocHtml,
+    tocListHtml,
     urlMapJson,
     charCount: countNoteChars(markdownBody),
     headerImagePath,
@@ -477,7 +510,11 @@ export function renderPreview(markdown: string, opts?: RenderOptions): string {
   );
 
   // Prefer frontmatter header, fall back to explicitly passed headerImagePath
-  const resolvedHeader = headerImagePath ?? opts?.headerImagePath;
+  const candidateHeader = headerImagePath ?? opts?.headerImagePath;
+  const resolvedHeader =
+    candidateHeader && isSafeRenderedImageSrc(candidateHeader, opts?.baseUri)
+      ? candidateHeader
+      : undefined;
   const headerImgHtml = resolvedHeader
     ? `<img src="${escHtml(resolvedHeader)}" alt="ヘッダー画像">`
     : '';
@@ -506,6 +543,7 @@ export interface RenderBodyResult {
   titleHtml: string;
   bodyHtml: string;
   tocHtml: string;
+  tocListHtml: string;
   urlMapJson: string;
   charCount: number;
   headerHtml: string;
@@ -516,10 +554,8 @@ export interface RenderBodyResult {
  * Used for incremental Webview updates via postMessage.
  */
 export function renderBody(markdown: string, opts?: RenderOptions): RenderBodyResult {
-  const { title, body, tocHtml, urlMapJson, charCount, headerImagePath } = renderContent(
-    markdown,
-    opts,
-  );
+  const { title, body, tocHtml, tocListHtml, urlMapJson, charCount, headerImagePath } =
+    renderContent(markdown, opts);
   const headerHtml = headerImagePath
     ? `<img src="${escHtml(headerImagePath)}" alt="ヘッダー画像">`
     : '';
@@ -527,6 +563,7 @@ export function renderBody(markdown: string, opts?: RenderOptions): RenderBodyRe
     titleHtml: escHtml(title),
     bodyHtml: body,
     tocHtml,
+    tocListHtml,
     urlMapJson,
     charCount,
     headerHtml,
@@ -554,7 +591,7 @@ function buildPage(
   const nonceAttr = isWebview ? ` nonce="${nonce}"` : '';
   const messageTokenJson = JSON.stringify(messageToken ?? '').replace(/</g, '\\u003c');
   const cspMeta = isWebview
-    ? `\n  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src ${cspSource} 'nonce-${nonce}'; img-src ${cspSource} https: data:; font-src ${cspSource}; worker-src blob:;">`
+    ? `\n  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'none'; style-src-elem ${cspSource} 'nonce-${nonce}'; style-src-attr 'unsafe-inline'; script-src ${cspSource} 'nonce-${nonce}'; img-src ${cspSource} https: data:; font-src ${cspSource}; worker-src blob:;">`
     : '';
   const assetTags = assetBaseUri
     ? `\n  <link rel="stylesheet" href="${escHtml(assetBaseUri)}/highlight.css" />\n  <link rel="stylesheet" href="${escHtml(assetBaseUri)}/katex.css" />`
@@ -570,7 +607,8 @@ function buildPage(
   return `<!doctype html>
 <html lang="ja">
 <head>
-  <meta charset="utf-8">${cspMeta}
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">${cspMeta}
   <title>${titleEsc || 'note プレビュー'}</title>
   ${assetTags}
   <style${nonceAttr}>
@@ -591,7 +629,7 @@ ${CSS}
       <button id="font-mincho">明朝</button>
     </div>
     <span id="status"></span>
-    <span id="char-count" style="margin-left:auto;font-size:12px;color:rgba(255,255,255,0.5);">${(charCount ?? 0).toLocaleString()}文字</span>
+    <span id="char-count" class="char-count">${(charCount ?? 0).toLocaleString()}文字</span>
   </div>
 
 ${tocHtml}
@@ -685,6 +723,7 @@ const CSS = `
       box-shadow: 0 1px 4px rgba(0,0,0,0.3);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       font-size: 13px;
+      min-width: 0;
     }
     .toolbar .divider {
       width: 1px; height: 20px; background: rgba(255,255,255,0.12); margin: 0 2px;
@@ -737,6 +776,10 @@ const CSS = `
     }
     #status.ok { color: #e8913a; }
     #status.err { color: #e05555; }
+    .char-count {
+      margin-left: auto; font-size: 12px; color: rgba(255,255,255,0.72);
+      white-space: nowrap;
+    }
 
     /* Layout */
     .note-container {
@@ -902,6 +945,7 @@ const CSS = `
       border-right: 1px solid var(--color-border-default);
       transition: width 0.25s;
     }
+    .side-toc[hidden] { display: none !important; }
     .side-toc::-webkit-scrollbar { display: none; } /* Chrome/Edge */
     .side-toc.is-collapsed {
       width: 48px; overflow: hidden; border-right: none;
@@ -911,7 +955,7 @@ const CSS = `
       display: flex; align-items: center; gap: 6px;
       font-family: var(--font-gothic);
       font-size: var(--font-size-sm); font-weight: 600;
-      color: rgba(8,19,26,0.36);
+      color: var(--color-text-secondary);
       cursor: pointer; user-select: none;
       white-space: nowrap; z-index: 51;
     }
@@ -942,7 +986,7 @@ const CSS = `
       display: block; width: 100%;
       background: none; border: none; padding: 0;
       font-family: inherit; font-size: var(--font-size-xs);
-      line-height: 1.5; color: rgba(8,19,26,0.40);
+      line-height: 1.5; color: var(--color-text-secondary);
       text-align: left; cursor: pointer; text-decoration: none;
     }
     .side-toc__link:hover { color: var(--color-text-secondary); }
@@ -971,6 +1015,15 @@ const CSS = `
       .note-body  { padding-right: 40px; padding-left: 40px; }
     }
     @media only screen and (max-width: 480px) {
+      .toolbar {
+        height: auto; min-height: 44px; padding: 6px 8px;
+        flex-wrap: wrap; gap: 4px;
+      }
+      .toolbar .divider { display: none; }
+      .tool-btn { padding: 6px 8px; }
+      .font-toggle button { min-width: 60px; padding: 5px 8px; }
+      #status { order: 10; flex-basis: 100%; }
+      .char-count { margin-left: 0; }
       .note-title {
         padding-right: 16px; padding-left: 16px;
         margin-top: 30px; margin-bottom: 35px;
@@ -1035,6 +1088,18 @@ const JS = `
 
     /* ── note.com-compatible character counter (computed in extension host) ── */
 
+    function isSafeImageUrl(value) {
+      if (/^data:image\\/(?:png|jpeg|gif|webp);base64,[a-z0-9+/=\\s]+$/i.test(value)) {
+        return value.length <= 2 * 1024 * 1024;
+      }
+      try {
+        var url = new URL(value);
+        return url.protocol === 'https:' && !url.username && !url.password && !url.port;
+      } catch (_) {
+        return false;
+      }
+    }
+
     function lookupImageUrl(urlMap, src) {
       if (!urlMap) return null;
       var normalized = src.replace(/\\\\/g, '/').replace(/^(?:\\.\\/)+/, '');
@@ -1042,7 +1107,7 @@ const JS = `
       var unsupRe = /\\.(svg|webp|bmp|tiff?)$/i;
       if (unsupRe.test(normalized)) keys.push(normalized.replace(unsupRe, '.png'));
       for (var i = 0; i < keys.length; i++) {
-        if (urlMap[keys[i]]) return urlMap[keys[i]];
+        if (urlMap[keys[i]] && isSafeImageUrl(urlMap[keys[i]])) return urlMap[keys[i]];
       }
       return null;
     }
@@ -1108,9 +1173,15 @@ const JS = `
           }
           if (window.__mermaid) window.__mermaid.run({ nodes: bodyEl.querySelectorAll('.mermaid') });
           // Rebuild side TOC
+          const sideToc = document.querySelector('.side-toc');
           const sideTocList = document.querySelector('.side-toc__list');
-          if (sideTocList) {
-            sideTocList.innerHTML = msg.tocHtml;
+          if (sideToc && sideTocList) {
+            sideTocList.innerHTML = msg.tocListHtml || '';
+            sideToc.hidden = !msg.tocListHtml;
+            if (!msg.tocListHtml) {
+              sideToc.classList.remove('is-collapsed');
+              document.querySelector('.note-container')?.classList.remove('toc-collapsed');
+            }
             initTocBehavior();
           }
           window.scrollTo(0, scrollY);
@@ -1220,7 +1291,17 @@ const JS = `
       clone.querySelectorAll('[data-source-line]').forEach(el => el.removeAttribute('data-source-line'));
       clone.querySelectorAll('[data-original-src]').forEach(el => el.removeAttribute('data-original-src'));
 
-      return { html: clone.innerHTML, text: el.innerText };
+      // innerText needs a rendered box to preserve paragraph/list line breaks.
+      // Measure the transformed clone off-screen, then remove it immediately.
+      const measurement = document.createElement('div');
+      measurement.style.cssText = 'position:fixed;left:-100000px;top:0;width:620px;opacity:0;pointer-events:none;';
+      measurement.appendChild(clone);
+      document.body.appendChild(measurement);
+      try {
+        return { html: clone.innerHTML, text: clone.innerText };
+      } finally {
+        measurement.remove();
+      }
     }
 
     function fallbackCopy(html, text, label) {

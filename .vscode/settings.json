@@ -1,10 +1,12 @@
 {
   "files.exclude": {
+    "**/.direnv": true,
     "**/.vscode-test": true,
     "**/dist": true,
     "**/node_modules": true,
     "**/out": true,
     "**/.vscode": true,
+    ".direnv": true,
     ".vscode-test": true,
     "dist": true,
     "node_modules": true,

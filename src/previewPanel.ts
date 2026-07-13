@@ -229,14 +229,18 @@ export class NotePreviewPanel {
       return;
     }
 
-    // Consent is keyed by the current service set in globalState. Always ask
-    // the consent module so configuration changes cannot reuse stale consent.
-    if (!(await ensureUploadConsent(this.context))) return;
-
     const editor = vscode.window.visibleTextEditors.find(
       (e) => e.document.uri.toString() === this.documentUri.toString(),
     );
     if (!editor) return;
+
+    if (
+      !(await ensureUploadConsent(this.context, editor.document.uri, {
+        interactive: force,
+      }))
+    ) {
+      return;
+    }
 
     // Capture the target document URI to detect stale results after switch
     const targetUri = this.documentUri.toString();
@@ -358,7 +362,7 @@ export class NotePreviewPanel {
       titleHtml: result.titleHtml,
       bodyHtml: result.bodyHtml,
       headerHtml: result.headerHtml,
-      tocHtml: result.tocHtml,
+      tocListHtml: result.tocListHtml,
       urlMapJson: result.urlMapJson,
       charCount: result.charCount,
     });

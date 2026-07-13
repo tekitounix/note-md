@@ -1,5 +1,5 @@
-tazuna_sha = "f9e38bf5e5fd8b70fc31109dbf50f3bbb78f3e70"
-last_sync = "2026-07-12T22:21:47+00:00"
+tazuna_sha = "9a6d69469d0366a417f214ccffd3f122dfb36183"
+last_sync = "2026-07-13T11:15:00+00:00"
 workflow_tier = "C"
 branch_strategy = "trunk"
 project_type = "external"
@@ -22,6 +22,8 @@ view_layout = "subdirectory"
 
 [workspace_visibility]
 hidden_entries = [
+  ".direnv",
+  "**/.direnv",
   ".vscode",
   "**/.vscode",
   ".vscode-test",
@@ -41,6 +43,12 @@ remote_state = "manual_release_only"
 default_pr_lane = ["npm lint", "npm format:check", "npm typecheck", "npm test", "npm package", "diff-check"]
 manual_lanes = ["ci", "release"]
 release_lanes = ["release workflow_dispatch"]
+
+[ci.gate_enforcement_date]
+method-presence = 2026-10-04
+design-scale-gate = 2026-10-04
+review-loop-closure = 2026-10-04
+plan-tier-allocation = 2026-10-04
 
 [local_execution]
 heavy_confirmation_required = true
@@ -94,6 +102,9 @@ max_ahead = 0
 max_behind = 0
 fail_on_diverged = true
 
+[orchestration]
+confirm_granularity = "declare"
+
 [review]
 enabled = true
 monthly_usd_limit = 2.0
@@ -114,6 +125,6 @@ output = "plans/active/<slug>/reviews/"
 
 [harness_files]
 ".envrc" = "1d26c74fd25a4c3dbb09e029fc609588da499fd4af2a41c88f6316c7f8c54cf1"
-"AGENTS.md" = "585467a9dd820a9669f0c2e6579de14a201be8b35c15cc0c3bb3b2c9114510cd"
+"AGENTS.md" = "8e2d7385e62c8d1c1442d1e177ad60a2bc0631ef8d7afb4127a899afc4c807b8"
 "CLAUDE.md" = "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49"
 "flake.nix" = "477774a47a5b7cee8c457a20132dbcf52dc7cfe69ab15bac3a71945f28aead19"

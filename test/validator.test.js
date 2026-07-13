@@ -56,6 +56,36 @@ function applyFirstFix(text, diagnostic) {
   return text.slice(0, start) + edit.newText + text.slice(end);
 }
 
+test('malformed frontmatter remains opted in and reports a YAML diagnostic', () => {
+  const text = '---\nnote-md: true\nbroken: [\n---\n# Title';
+  const diagnostics = validate(text, 'change');
+  assert.equal(findByRule(diagnostics, 'note/frontmatter-invalid').length, 1);
+});
+
+test('unterminated frontmatter reports an error instead of disabling validation', () => {
+  const diagnostics = validate('---\nnote-md: true\n# not closed', 'change');
+  assert.equal(findByRule(diagnostics, 'note/frontmatter-invalid').length, 1);
+});
+
+test('frontmatter through line 100 is protected from body syntax rules', () => {
+  const lines = [
+    '---',
+    'note-md: true',
+    ...Array(25).fill('key: value'),
+    'quoted: "*italic*"',
+    '---',
+    '# T',
+  ];
+  const diagnostics = validate(lines.join('\n'), 'change');
+  assert.equal(findByRule(diagnostics, 'note/no-italic').length, 0);
+  assert.equal(findByRule(diagnostics, 'note/multiple-h1').length, 0);
+});
+
+test('frontmatter eyecatch text is not inspected by unrelated syntax rules', () => {
+  const diagnostics = validate('---\nnote-md: { eyecatch: "foo|bar.png" }\n---\n# T', 'change');
+  assert.equal(findByRule(diagnostics, 'note/ruby-unmatched').length, 0);
+});
+
 // =====================================================================
 // 4.1 Unsupported syntax detection
 // =====================================================================
@@ -378,6 +408,11 @@ test('note/math-display-unclosed: no error for properly closed $$ block', () => 
   assert.equal(diags.length, 0);
 });
 
+test('note/math-display-unclosed: ignores $$ inside fenced code', () => {
+  const text = '```text\n$$\n```';
+  assert.equal(findByRule(validate(text, 'change'), 'note/math-display-unclosed').length, 0);
+});
+
 // ─── note/image-path-traversal ──────────────────────────────────
 
 test('note/image-path-traversal: detects ../ in image path', () => {
@@ -397,6 +432,21 @@ test('note/image-path-traversal: no error for URL images', () => {
   const text = '![alt](https://example.com/pic.png)';
   const diags = findByRule(validate(text, 'change'), 'note/image-path-traversal');
   assert.equal(diags.length, 0);
+});
+
+test('unsafe external image schemes are errors while HTTPS remains a warning', () => {
+  const unsafe = findByRule(
+    validate('![x](http://example.com/x.png)\n![y](javascript:alert(1))', 'change'),
+    'note/image-external-unverified',
+  );
+  assert.equal(unsafe.length, 2);
+  assert.ok(unsafe.every((diagnostic) => diagnostic.severity === 'error'));
+
+  const safe = findByRule(
+    validate('![x](https://example.com/x.png)', 'change'),
+    'note/image-external-unverified',
+  );
+  assert.equal(safe[0].severity, 'warning');
 });
 
 test('note/image-path-traversal: does NOT flag filenames containing two dots', () => {
@@ -599,7 +649,9 @@ test('fenced blocks allow three-space indentation and require a matching closing
   assert.equal(findByRule(protectedResults, 'note/no-italic').length, 0);
 
   const unclosedResults = validate('````\n*italic*\n```', 'change');
-  assert.ok(findByRule(unclosedResults, 'note/no-italic').length > 0);
+  assert.equal(findByRule(unclosedResults, 'note/no-italic').length, 0);
+  assert.equal(findByRule(unclosedResults, 'note/code-fence-unclosed').length, 1);
+  assert.equal(findByRule(unclosedResults, 'note/code-fence-unclosed')[0].range.line, 0);
 });
 
 test('rules do NOT fire inside display math blocks', () => {
@@ -733,6 +785,75 @@ test('note/image-unconvertible rejects AVIF instead of promising conversion', ()
   const results = validate('# T\n\n![avif](photo.avif)', 'save', process.cwd());
   assert.equal(findByRule(results, 'note/image-unconvertible').length, 1);
   assert.equal(findByRule(results, 'note/image-unsupported').length, 0);
+});
+
+test('frontmatter eyecatch receives the same image safety diagnostics as body images', async () => {
+  const articleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'note-md-frontmatter-image-'));
+  try {
+    const traversal = '---\nnote-md: { eyecatch: ../outside.png }\n---\n# T';
+    assert.equal(
+      findByRule(validate(traversal, 'change', articleDir), 'note/image-path-traversal').length,
+      1,
+    );
+
+    const avif = '---\nnote-md: { eyecatch: photo.avif }\n---\n# T';
+    assert.equal(
+      findByRule(validate(avif, 'save', articleDir), 'note/image-unconvertible').length,
+      1,
+    );
+
+    const external = '---\nnote-md: { eyecatch: https://example.com/x.png }\n---\n# T';
+    assert.equal(
+      findByRule(validate(external, 'change', articleDir), 'note/image-external-unverified').length,
+      1,
+    );
+
+    const missing = '---\nnote-md: { eyecatch: missing.png }\n---\n# T';
+    assert.equal(
+      findByRule(await validateAsync(missing, articleDir), 'note/image-missing').length,
+      1,
+    );
+  } finally {
+    fs.rmSync(articleDir, { recursive: true, force: true });
+  }
+});
+
+test('note/image-low-res warns for encoded images narrower than 620px', async () => {
+  const articleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'note-md-low-res-'));
+  try {
+    const png = Buffer.alloc(24);
+    Buffer.from('89504e470d0a1a0a', 'hex').copy(png);
+    png.writeUInt32BE(13, 8);
+    png.write('IHDR', 12, 'ascii');
+    png.writeUInt32BE(320, 16);
+    png.writeUInt32BE(200, 20);
+    fs.writeFileSync(path.join(articleDir, 'small.png'), png);
+    const diagnostics = await validateAsync('# T\n\n![small](small.png)', articleDir);
+    assert.equal(findByRule(diagnostics, 'note/image-low-res').length, 1);
+  } finally {
+    fs.rmSync(articleDir, { recursive: true, force: true });
+  }
+});
+
+test('note/image-low-res skips oversized sparse files without reading the whole image', async () => {
+  const articleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'note-md-low-res-large-'));
+  try {
+    const imagePath = path.join(articleDir, 'large.png');
+    const header = Buffer.alloc(24);
+    Buffer.from('89504e470d0a1a0a', 'hex').copy(header);
+    header.writeUInt32BE(13, 8);
+    header.write('IHDR', 12, 'ascii');
+    header.writeUInt32BE(320, 16);
+    header.writeUInt32BE(200, 20);
+    fs.writeFileSync(imagePath, header);
+    fs.truncateSync(imagePath, 20 * 1024 * 1024 + 1);
+
+    const diagnostics = await validateAsync('# T\n\n![large](large.png)', articleDir);
+    assert.equal(findByRule(diagnostics, 'note/image-oversized').length, 1);
+    assert.equal(findByRule(diagnostics, 'note/image-low-res').length, 0);
+  } finally {
+    fs.rmSync(articleDir, { recursive: true, force: true });
+  }
 });
 
 // =====================================================================

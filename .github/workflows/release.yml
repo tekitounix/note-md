@@ -16,6 +16,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
 defaults:
   run:
     working-directory: note-md
@@ -29,18 +33,51 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       vsix_name: ${{ steps.version.outputs.vsix_name }}
+      release_sha: ${{ steps.release-ref.outputs.release_sha }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           path: note-md
-          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          fetch-tags: true
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - name: Resolve immutable release ref
+        id: release-ref
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must look like v0.1.0 or v0.1.0-beta.1" >&2
+            exit 1
+          fi
+          git show-ref --verify --quiet "refs/tags/$TAG" || {
+            echo "Exact release tag does not exist: $TAG" >&2
+            exit 1
+          }
+          release_sha="$(git rev-parse "refs/tags/$TAG^{commit}")"
+          git merge-base --is-ancestor "$release_sha" origin/main || {
+            echo "Release tag is not an ancestor of origin/main" >&2
+            exit 1
+          }
+          git checkout --detach "$release_sha"
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: note-md/package-lock.json
-      - run: sudo apt-get update && sudo apt-get install -y xvfb
+      - name: Install local-gate tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck xvfb
+          archive="actionlint_1.7.12_linux_amd64.tar.gz"
+          curl --fail --location --silent --show-error \
+            --output "/tmp/$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/$archive"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  /tmp/$archive" \
+            | sha256sum --check --strict
+          tar -xzf "/tmp/$archive" -C /tmp actionlint
+          sudo install -m 0755 /tmp/actionlint /usr/local/bin/actionlint
         working-directory: .
       - run: ./scripts/check.sh
 
@@ -49,11 +86,6 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
         run: |
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Release tag must look like v0.1.0 or v0.1.0-beta.1" >&2
-            exit 1
-          fi
-
           version="${TAG#v}"
           package_version="$(node -p "require('./package.json').version")"
           if [[ "$package_version" != "$version" ]]; then
@@ -80,14 +112,14 @@ jobs:
         run: npx --no-install vsce package -o "${{ steps.version.outputs.vsix_name }}"
 
       - name: Upload packaged vsix
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ steps.version.outputs.vsix_name }}
           path: note-md/${{ steps.version.outputs.vsix_name }}
           if-no-files-found: error
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ inputs.tag }}
           files: note-md/${{ steps.version.outputs.vsix_name }}
@@ -104,19 +136,19 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           path: note-md
-          ref: ${{ inputs.tag }}
+          ref: ${{ needs.release.outputs.release_sha }}
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: note-md/package-lock.json
       - run: npm ci
       - name: Download packaged vsix
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ${{ needs.release.outputs.vsix_name }}
           path: note-md/release-artifacts

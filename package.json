@@ -30,6 +30,12 @@
   "activationEvents": [
     "onLanguage:markdown"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "制限モードでは拡張機能を有効化しません。プレビュー、検証、ローカル画像の読み取り、外部送信を再開するにはワークスペースを信頼してください"
+    }
+  },
   "main": "./dist/extension.js",
   "bin": {
     "note-md": "./dist/cli.js"
@@ -51,6 +57,10 @@
       {
         "command": "note-md.addHeader",
         "title": "note ヘッダーを追加"
+      },
+      {
+        "command": "note-md.revokeUploadConsent",
+        "title": "note 画像送信の同意を撤回"
       }
     ],
     "menus": {
@@ -78,17 +88,14 @@
         },
         "note-md.enabledUploadServices": {
           "type": "array",
-          "default": [
-            "litterbox.catbox.moe"
-          ],
+          "default": [],
           "items": {
             "type": "string",
             "enum": [
-              "litterbox.catbox.moe",
-              "imgbb.com"
+              "litterbox.catbox.moe"
             ]
           },
-          "description": "利用する画像アップロードサービス。法務・運用要件に応じて明示的に選択してください"
+          "description": "利用する画像アップロードサービス。既定では外部送信しません。規約とデータ取扱いを確認して明示的に選択してください"
         },
         "note-md.validator.disabledRules": {
           "type": "array",
@@ -96,6 +103,8 @@
           "items": {
             "type": "string",
             "enum": [
+              "note/frontmatter-invalid",
+              "note/code-fence-unclosed",
               "note/no-table",
               "note/no-italic",
               "note/no-inline-code",
@@ -120,7 +129,8 @@
               "note/hr-variant",
               "note/unclosed-html-tag",
               "note/consecutive-blanks",
-              "note/unsupported-version"
+              "note/unsupported-version",
+              "note/image-low-res"
             ]
           },
           "description": "無効にするバリデーションルール ID の一覧 (例: [\"note/no-inline-code\", \"note/hr-variant\"])"
@@ -158,7 +168,8 @@
     "katex": "^0.17.0",
     "markdown-it": "^14.3.0",
     "mermaid": "^11.16.0",
-    "sanitize-html": "^2.17.6"
+    "sanitize-html": "^2.17.6",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

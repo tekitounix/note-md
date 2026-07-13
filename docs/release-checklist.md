@@ -6,8 +6,8 @@
 
 - `./scripts/check.sh` が通る
 - `git diff --check` が通る
-- `actionlint .github/workflows/*.yml` が通る（`./scripts/check.sh` 内でも導入済み環境では実行）
-- `shellcheck scripts/check.sh` が通る（`./scripts/check.sh` 内でも導入済み環境では実行）
+- `actionlint .github/workflows/*.yml` が通る（`./scripts/check.sh` の必須検査）
+- `shellcheck scripts/check.sh` が通る（`./scripts/check.sh` の必須検査）
 - `npm audit --omit=dev` に既知の実行時脆弱性がない
 - 現行 tazuna でハーネス、構造、ライフサイクル、文書、言語、安全性、継続的統合の監査を確認する
 
@@ -21,8 +21,8 @@
 
 ## 画像確認
 
-- 対応形式 JPG / PNG / GIF / HEIC がそのまま扱える
-- SVG / WebP / BMP / TIFF が PNG 変換される
+- JPG / PNG / SVG / WebP / BMP / TIFF が匿名名の PNG へ正規化される
+- GIF / HEIC / AVIF と未知形式が外部へ送信されず、事前変換を案内する
 - 同名別ディレクトリ画像で URL 置換が壊れない
 - 同一画像を別パスで参照しても置換が壊れない
 - 画像なし記事で本文コピーが即時有効になる
@@ -50,7 +50,7 @@
 
 - アップロード同意文面が実装と README で矛盾しない
 - README と同意文面が第三者サービスのログ可能性を明記している
-- 既定で有効なアップロードサービスが公開方針に合っている
+- アップロードサービスが既定で無効で、Litterbox の明示 opt-in だけが許可される
 - 各アップロードサービスの接続性が極端に悪化していない
 - 削除済みサービスへの誤参照がコード・ドキュメントに残っていない
 - LICENSE、`docs/third-party-notices.md`、生成済みの `docs/third-party-licenses.txt` が同梱されている
@@ -65,8 +65,8 @@
 - `docs/changelog.md` の先頭リリースが package.json と tag の version に一致する
 - v0 系または末尾に先行版識別子を持つ版が GitHub Release でプレリリース扱いになる
 - 不要な検証用ファイルが残っていない
-- `npx --no-install vsce ls` で `.agents/`、`.claude/`、`.github/`、`.tazuna/`、`AGENTS.md`、`plans/`、検証用ファイルが同梱されないことを確認する
-- `npx --no-install vsce package -o note-md-<version>.vsix` で生成した `.vsix` をローカルにインストールし、主要操作を確認する
+- `NOTE_MD_VSIX_OUTPUT=note-md-<version>.vsix ./scripts/check.sh` で生成・検証した単一の `.vsix` に、必須ファイルだけが同梱されることを確認する
+- 同じ `.vsix` をローカルにインストールし、主要操作を確認する
 - git status がクリーンである
 - 公開対象コミットが確定している
 - 代表原稿を生成した VSIX で開き、タイトルと本文を note の下書きへ貼り付け、パソコンとスマートフォンのプレビューを日付付き証跡として残す

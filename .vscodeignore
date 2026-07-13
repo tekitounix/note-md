@@ -1,4 +1,7 @@
 .vscode/**
+.direnv/**
+.dist-build-*/**
+.dist-backup-*/**
 .vscode-test/**
 .vscode-test.*
 .agents/**
@@ -34,3 +37,4 @@ scripts/**
 .prettierignore
 eslint.config.mjs
 node_modules/**
+media/icon-marketplace.svg

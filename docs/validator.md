@@ -24,8 +24,8 @@ note-md rules
 | 分類 | rule ID |
 |---|---|
 | 非対応書式 | `note/no-table`、`note/no-italic`、`note/no-inline-code`、`note/no-h456`、`note/no-html5`、`note/no-footnote`、`note/no-image-title` |
-| source 整合性 | `note/ruby-unmatched`、`note/ruby-nested`、`note/math-unmatched`、`note/math-display-unclosed` |
-| 画像 | `note/image-path-traversal`、`note/image-missing`、`note/image-oversized`、`note/image-unsupported`、`note/image-unconvertible`、`note/image-external-unverified`、`note/image-alt-empty` |
+| source 整合性 | `note/frontmatter-invalid`、`note/code-fence-unclosed`、`note/ruby-unmatched`、`note/ruby-nested`、`note/math-unmatched`、`note/math-display-unclosed` |
+| 画像 | `note/image-path-traversal`、`note/image-missing`、`note/image-oversized`、`note/image-unsupported`、`note/image-unconvertible`、`note/image-external-unverified`、`note/image-alt-empty`、`note/image-low-res` |
 | 構造・品質 | `note/missing-h1`、`note/empty-h1`、`note/multiple-h1`、`note/hr-variant`、`note/unclosed-html-tag`、`note/consecutive-blanks` |
 
 `note/image-alt-empty` はアクセシビリティの hint である。装飾画像として空 ALT を意図する場合は、画像の直前に次を置く。

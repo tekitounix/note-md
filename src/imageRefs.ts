@@ -18,7 +18,25 @@ export function canonicalizeMarkdownImageRef(src: string): string {
 }
 
 export function isExternalImageRef(src: string): boolean {
-  return /^(?:https?:|data:)/i.test(src.trim());
+  const value = src.trim();
+  if (/^[a-z]:[\\/]/i.test(value)) return false;
+  return /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(value);
+}
+
+/** External image forms that the renderer and Webview CSP intentionally allow. */
+export function isSafeExternalImageRef(src: string): boolean {
+  const value = src.trim();
+  if (/^data:image\/(?:png|jpeg|gif|webp);base64,[a-z0-9+/=\s]+$/i.test(value)) {
+    return value.length <= 2 * 1024 * 1024;
+  }
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === 'https:' && url.username === '' && url.password === '' && url.port === ''
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function normalizeImageRef(src: string): string {
@@ -72,15 +90,6 @@ export async function resolveLocalImageRefAsync(
   if (!isWithin(articleReal, imageReal)) return null;
 
   return { sourceRef, diskPath: imageReal, exists: true };
-}
-
-export function getUploadFileName(imgPath: string): string {
-  return path.basename(imgPath);
-}
-
-export function getConvertedUploadFileName(imgPath: string): string {
-  const ext = path.extname(imgPath);
-  return `${path.basename(imgPath, ext)}.png`;
 }
 
 export function resolveMappedImageUrl(

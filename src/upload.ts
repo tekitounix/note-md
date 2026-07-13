@@ -13,6 +13,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import type { Uri } from 'vscode';
 import { getEnabledUploadServiceNames, getServiceManager, type UploadOutcome } from './services';
 import { normalizeImageRef } from './imageRefs';
 
@@ -120,6 +121,8 @@ export async function uploadWithRegistry(
   cache: CacheMap,
   expiry = '72h',
   force = false,
+  signal?: AbortSignal,
+  resource?: Uri,
 ): Promise<UploadResult> {
   const hash = sha256(data);
   const now = Date.now();
@@ -128,7 +131,7 @@ export async function uploadWithRegistry(
   const existing = cache[hash];
   if (existing && !force) {
     const expired = existing.expiresAt !== null && existing.expiresAt < now;
-    const serviceEnabled = getEnabledUploadServiceNames().has(existing.serviceName);
+    const serviceEnabled = getEnabledUploadServiceNames(resource).has(existing.serviceName);
     if (!expired && serviceEnabled) {
       rememberSourceRef(existing, sourceRef);
       return {
@@ -143,23 +146,24 @@ export async function uploadWithRegistry(
   }
 
   // Upload via ServiceManager (handles health check + fallback)
-  const serviceScope = [...getEnabledUploadServiceNames()].sort().join('|');
+  const serviceScope = [...getEnabledUploadServiceNames(resource)].sort().join('|');
   const inFlightKey = `${hash}:${expiry}:${serviceScope}`;
-  let uploadPromise = inFlightUploads.get(inFlightKey);
+  let uploadPromise = signal ? undefined : inFlightUploads.get(inFlightKey);
   if (!uploadPromise) {
-    uploadPromise = getServiceManager().upload(data, fileName, expiry);
-    inFlightUploads.set(inFlightKey, uploadPromise);
+    uploadPromise = getServiceManager().upload(data, fileName, expiry, signal, resource);
+    if (!signal) inFlightUploads.set(inFlightKey, uploadPromise);
   }
   let outcome: UploadOutcome;
   try {
     outcome = await uploadPromise;
   } finally {
-    if (inFlightUploads.get(inFlightKey) === uploadPromise) {
+    if (!signal && inFlightUploads.get(inFlightKey) === uploadPromise) {
       inFlightUploads.delete(inFlightKey);
     }
   }
+  signal?.throwIfAborted();
 
-  if (!getEnabledUploadServiceNames().has(outcome.serviceName)) {
+  if (!getEnabledUploadServiceNames(resource).has(outcome.serviceName)) {
     throw new Error('アップロード中に有効なサービス設定が変更されました。再実行してください');
   }
 

@@ -1,14 +1,13 @@
+import { parseDocument } from 'yaml';
+
 /**
- * Parse YAML-style frontmatter from a Markdown document.
+ * Parse YAML frontmatter from a Markdown document.
  *
- * The parser is intentionally small: it is NOT a general YAML implementation.
- * It extracts two things the extension actually needs:
- *   1. top-level flat `key: value` pairs (for the legacy `header` eyecatch), and
- *   2. the `note-md` marker that opts a file in as a note article, plus its
- *      optional scalar fields (`eyecatch`, `version`).
- * Every other tool's frontmatter keys are ignored.
+ * YAML is decoded with the core schema, duplicate keys are rejected, aliases
+ * are disabled, and only the fields consumed by note-md are projected into the
+ * public result. Other tools' frontmatter keys remain ignored.
  *
- * Recognition contract (see plans/audits/note-header-schema/proposal.md):
+ * Recognition contract:
  *   note-md:                     -> note article, defaults
  *   note-md: true                -> note article, defaults
  *   note-md: false               -> explicit opt-out (NOT a note article)
@@ -62,10 +61,14 @@ export interface ParseResult {
   lineCount: number;
   /** The note-md recognition marker */
   noteMd: NoteMdMarker;
+  /** Safe, user-facing parse failure marker for malformed frontmatter. */
+  frontmatterError?: string;
 }
 
 /** Maximum number of lines scanned while looking for the closing `---` fence. */
-const MAX_FRONTMATTER_LINES = 100;
+export const MAX_FRONTMATTER_LINES = 100;
+/** Avoid parsing an unexpectedly large YAML document from the editor thread. */
+const MAX_FRONTMATTER_BYTES = 128 * 1024;
 
 const EMPTY_MARKER: NoteMdMarker = { hasMarker: false, optOut: false, config: {} };
 
@@ -101,108 +104,101 @@ export function parseFrontmatter(markdown: string): ParseResult {
     }
   }
   if (endIndex < 0) {
-    return { data: {}, content: markdown, lineCount: 0, noteMd: EMPTY_MARKER };
+    const boundedBody = lines.slice(1, MAX_FRONTMATTER_LINES + 1).join('\n');
+    return {
+      data: {},
+      content: markdown,
+      lineCount: Math.min(lines.length, MAX_FRONTMATTER_LINES + 1),
+      noteMd: recoverNoteMdMarker(boundedBody),
+      frontmatterError: `frontmatter の閉じ区切り (---) が ${MAX_FRONTMATTER_LINES} 行以内にありません`,
+    };
   }
 
-  const body = lines.slice(1, endIndex);
-  const data = parseTopLevelFlat(body);
-  const noteMd = parseNoteMdMarker(body);
+  const body = lines.slice(1, endIndex).join('\n');
+  const yaml = parseYamlMapping(body);
+  const data = yaml.mapping ? projectTopLevelScalars(yaml.mapping) : {};
+  const noteMd = yaml.mapping ? parseNoteMdMarker(yaml.mapping) : recoverNoteMdMarker(body);
 
   const content = lines.slice(endIndex + 1).join('\n');
   const lineCount = endIndex + 1;
-  return { data, content, lineCount, noteMd };
+  return { data, content, lineCount, noteMd, frontmatterError: yaml.error };
 }
 
-/** Parse only column-0 `key: value` pairs (nested/indented lines are ignored). */
-function parseTopLevelFlat(body: string[]): Frontmatter {
+/** Parse a bounded YAML mapping without aliases or duplicate keys. */
+function parseYamlMapping(source: string): {
+  mapping?: Map<unknown, unknown>;
+  error?: string;
+} {
+  const genericError = 'frontmatter を安全な YAML として解析できません';
+  if (Buffer.byteLength(source, 'utf8') > MAX_FRONTMATTER_BYTES) {
+    return { error: `frontmatter が上限 ${MAX_FRONTMATTER_BYTES} bytes を超えています` };
+  }
+
+  try {
+    const document = parseDocument(source, {
+      schema: 'core',
+      uniqueKeys: true,
+    });
+    if (document.errors.length > 0) return { error: genericError };
+    const value: unknown = document.toJS({ mapAsMap: true, maxAliasCount: 0 });
+    return value instanceof Map ? { mapping: value } : { error: genericError };
+  } catch {
+    return { error: genericError };
+  }
+}
+
+/** Preserve explicit note intent even when unrelated YAML is malformed. */
+function recoverNoteMdMarker(source: string): NoteMdMarker {
+  const marker = source.split('\n').find((line) => /^note-md\s*:/.test(line));
+  if (!marker) return { hasMarker: false, optOut: false, config: {} };
+  return { hasMarker: true, optOut: false, config: {} };
+}
+
+/** Project top-level scalar values while preserving the legacy `data` API. */
+function projectTopLevelScalars(mapping: Map<unknown, unknown>): Frontmatter {
   const data: Frontmatter = {};
-  for (const line of body) {
-    if (/^\s/.test(line)) continue; // skip indented (nested) lines
-    const colonIdx = line.indexOf(':');
-    if (colonIdx < 0) continue;
-    const key = line.slice(0, colonIdx).trim();
-    if (!key) continue;
-    data[key] = stripScalar(line.slice(colonIdx + 1));
+  for (const [key, value] of mapping) {
+    if (typeof key !== 'string' || key.length === 0) continue;
+    const scalar = scalarToString(value);
+    if (scalar !== undefined) data[key] = scalar;
   }
   return data;
 }
 
-/** Locate and parse the `note-md` marker within the frontmatter body lines. */
-function parseNoteMdMarker(body: string[]): NoteMdMarker {
-  let markerIdx = -1;
-  for (let i = 0; i < body.length; i++) {
-    if (/^note-md\s*:/.test(body[i])) {
-      markerIdx = i;
-      break;
-    }
-  }
-  if (markerIdx < 0) return { hasMarker: false, optOut: false, config: {} };
-
-  const line = body[markerIdx];
-  const rest = stripComment(line.slice(line.indexOf(':') + 1)).trim();
-
-  // Explicit opt-out
-  if (rest === 'false') return { hasMarker: true, optOut: true, config: {} };
-
-  // Flow-style mapping: note-md: { eyecatch: a.png, version: 1 }
-  if (rest.startsWith('{')) {
-    return { hasMarker: true, optOut: false, config: parseFlowMapping(rest) };
+/** Locate and normalize the `note-md` marker from the decoded mapping. */
+function parseNoteMdMarker(mapping: Map<unknown, unknown>): NoteMdMarker {
+  if (!mapping.has('note-md')) {
+    return { hasMarker: false, optOut: false, config: {} };
   }
 
-  // Scalar truthy marker (true / null / ~ / empty) or block-style mapping.
+  const marker = mapping.get('note-md');
+  if (marker === false) return { hasMarker: true, optOut: true, config: {} };
+
   const config: NoteMdConfig = {};
-  if (rest === '' || rest === '~' || rest === 'null' || rest === 'true') {
-    // Block-style: collect indented child lines following the marker.
-    for (let i = markerIdx + 1; i < body.length; i++) {
-      if (!/^\s/.test(body[i])) break; // dedent -> end of block
-      if (body[i].trim() === '') continue;
-      assignNoteMdField(config, body[i]);
+  if (marker instanceof Map) {
+    const eyecatch = marker.get('eyecatch');
+    if (typeof eyecatch === 'string' && eyecatch.length > 0) {
+      config.eyecatch = eyecatch;
     }
+
+    const version = marker.get('version');
+    const numericVersion =
+      typeof version === 'number'
+        ? version
+        : typeof version === 'string' && version.trim() !== ''
+          ? Number(version)
+          : Number.NaN;
+    if (Number.isFinite(numericVersion)) config.version = numericVersion;
   }
-  // Any other scalar (e.g. a stray string) still counts as an opt-in marker.
+
+  // Any value other than boolean false opts the document in. Unknown fields
+  // and unexpected scalar values are deliberately ignored.
   return { hasMarker: true, optOut: false, config };
 }
 
-/** Parse a flow mapping body like `{ eyecatch: a.png, version: 1 }`. */
-function parseFlowMapping(rest: string): NoteMdConfig {
-  const config: NoteMdConfig = {};
-  const inner = rest.replace(/^\{/, '').replace(/\}\s*$/, '');
-  for (const part of inner.split(',')) {
-    if (part.trim() !== '') assignNoteMdField(config, part);
-  }
-  return config;
-}
-
-/** Assign a single `key: value` fragment to the note-md config. */
-function assignNoteMdField(config: NoteMdConfig, fragment: string): void {
-  const colonIdx = fragment.indexOf(':');
-  if (colonIdx < 0) return;
-  const key = fragment.slice(0, colonIdx).trim();
-  const value = stripScalar(fragment.slice(colonIdx + 1));
-  if (key === 'eyecatch') {
-    if (value) config.eyecatch = value;
-  } else if (key === 'version') {
-    const n = Number(value);
-    if (Number.isFinite(n)) config.version = n;
-  }
-}
-
-/** Strip a trailing ` # comment` from an (unquoted) value. */
-function stripComment(value: string): string {
-  const trimmed = value.replace(/\r$/, '');
-  const hashIdx = trimmed.search(/\s#/);
-  return hashIdx >= 0 ? trimmed.slice(0, hashIdx) : trimmed;
-}
-
-/** Trim, unquote, and drop trailing comments from a scalar value. */
-function stripScalar(value: string): string {
-  let v = value.replace(/\r$/, '').trim();
-  const quote = v[0];
-  if (quote === '"' || quote === "'") {
-    const end = v.indexOf(quote, 1);
-    if (end > 0) return v.slice(1, end); // quoted content; any trailing comment ignored
-  }
-  const hashIdx = v.search(/\s#/);
-  if (hashIdx >= 0) v = v.slice(0, hashIdx).trim();
-  return v;
+function scalarToString(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value === null) return '';
+  return undefined;
 }

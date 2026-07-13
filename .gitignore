@@ -1,7 +1,10 @@
 node_modules/
+.direnv/
 .vscode-test/
 out/
 dist/
+.dist-build-*/
+.dist-backup-*/
 *.vsix
 .DS_Store
 test-workspace/*

@@ -4,12 +4,18 @@ import * as fsp from 'fs/promises';
 import { decodeHTML } from 'entities';
 import {
   isExternalImageRef,
+  isSafeExternalImageRef,
   normalizeImageRef,
   resolveLocalImageRef,
   resolveLocalImageRefAsync,
 } from './imageRefs';
 import { scanImageReferences, type MarkdownImageReference } from './imageScanner';
 import { parseFrontmatter, NOTE_MD_SCHEMA_VERSION } from './frontmatter';
+import {
+  NORMALIZABLE_IMAGE_EXTENSIONS,
+  readEncodedImageDimensions,
+  type ImageDimensions,
+} from './imageDimensions';
 
 // ─── Interfaces ─────────────────────────────────────────────
 
@@ -44,6 +50,7 @@ interface ValidationContext {
   text: string;
   lines: string[];
   isProtected: (line: number) => boolean;
+  isCodeBlock: (line: number) => boolean;
   isIgnored: (line: number) => boolean;
   getExclusionZones: (line: number) => Array<[number, number]>;
   imageRefs: MarkdownImageReference[];
@@ -52,20 +59,21 @@ interface ValidationContext {
 
 // ─── Preprocessing ──────────────────────────────────────────
 
-function preprocess(lines: string[]): {
+function preprocess(
+  text: string,
+  lines: string[],
+): {
   protectedLines: boolean[];
+  codeBlockLines: Set<number>;
   ignoredLines: Set<number>;
 } {
   const protectedLines = new Array<boolean>(lines.length).fill(false);
   const ignoredLines = new Set<number>();
 
   // Pass 0: Frontmatter — protect lines within --- delimiters at file start
-  if (lines.length > 0 && lines[0].trimEnd() === '---') {
-    protectedLines[0] = true;
-    for (let i = 1; i < lines.length && i <= 20; i++) {
-      protectedLines[i] = true;
-      if (lines[i].trimEnd() === '---') break;
-    }
+  const frontmatterLines = parseFrontmatter(text).lineCount;
+  for (let i = 0; i < frontmatterLines; i++) {
+    protectedLines[i] = true;
   }
 
   // Pass 1: Fenced code blocks (highest priority — processed before math)
@@ -73,7 +81,6 @@ function preprocess(lines: string[]): {
   let inFence = false;
   let fenceChar = '';
   let fenceLength = 0;
-  let fenceStart = -1;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -83,7 +90,6 @@ function preprocess(lines: string[]): {
         inFence = true;
         fenceChar = fenceMatch[1][0];
         fenceLength = fenceMatch[1].length;
-        fenceStart = i;
         protectedLines[i] = true;
         codeBlockLines.add(i);
       }
@@ -96,16 +102,7 @@ function preprocess(lines: string[]): {
         inFence = false;
         fenceChar = '';
         fenceLength = 0;
-        fenceStart = -1;
       }
-    }
-  }
-
-  // Roll back unclosed fence (keep only the opening line protected)
-  if (inFence && fenceStart >= 0) {
-    for (let i = fenceStart + 1; i < lines.length; i++) {
-      protectedLines[i] = false;
-      codeBlockLines.delete(i);
     }
   }
 
@@ -150,7 +147,7 @@ function preprocess(lines: string[]): {
     }
   }
 
-  return { protectedLines, ignoredLines };
+  return { protectedLines, codeBlockLines, ignoredLines };
 }
 
 // ─── Exclusion zones ────────────────────────────────────────
@@ -206,6 +203,12 @@ function imagePathMatches(ctx: ValidationContext, line: number): ImagePathMatch[
       pathStart: image.column,
       length: image.length,
     }));
+}
+
+function isImageLineExcluded(ctx: ValidationContext, line: number): boolean {
+  if (ctx.isIgnored(line)) return true;
+  if (!ctx.isProtected(line)) return false;
+  return !ctx.imageRefs.some((image) => image.kind === 'frontmatter' && image.line === line);
 }
 
 function hasLocalPathEscape(imgPath: string): boolean {
@@ -305,6 +308,58 @@ function findH1Headings(ctx: ValidationContext): H1Match[] {
 // --- 4.1 Unsupported syntax detection ---
 
 const rules: ValidationRule[] = [
+  // note/frontmatter-invalid — Malformed or unsafe YAML must not disable validation.
+  {
+    id: 'note/frontmatter-invalid',
+    severity: 'error',
+    trigger: 'change',
+    check(ctx) {
+      const parsed = parseFrontmatter(ctx.text);
+      if (!parsed.frontmatterError) return [];
+      return [diag(this, parsed.frontmatterError, 0, 0, ctx.lines[0]?.length ?? 0)];
+    },
+  },
+
+  // note/code-fence-unclosed — EOF before a matching closing fence.
+  {
+    id: 'note/code-fence-unclosed',
+    severity: 'error',
+    trigger: 'change',
+    check(ctx) {
+      const frontmatterLines = parseFrontmatter(ctx.text).lineCount;
+      let marker = '';
+      let length = 0;
+      let openingLine = -1;
+      for (let i = frontmatterLines; i < ctx.lines.length; i++) {
+        if (!marker) {
+          const opening = ctx.lines[i].match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+          if (!opening) continue;
+          marker = opening[1][0];
+          length = opening[1].length;
+          openingLine = i;
+          continue;
+        }
+        const escaped = marker === '`' ? '`' : '~';
+        if (new RegExp(`^ {0,3}${escaped}{${length},}\\s*$`).test(ctx.lines[i])) {
+          marker = '';
+          length = 0;
+          openingLine = -1;
+        }
+      }
+      return openingLine >= 0
+        ? [
+            diag(
+              this,
+              'コードブロックが閉じられていません',
+              openingLine,
+              0,
+              ctx.lines[openingLine].length,
+            ),
+          ]
+        : [];
+    },
+  },
+
   // note/no-table — Pipe tables
   {
     id: 'note/no-table',
@@ -572,19 +627,20 @@ const rules: ValidationRule[] = [
       return ctx.imageRefs
         .filter(
           (image) =>
-            isExternalImageRef(image.sourceRef) &&
-            !ctx.isProtected(image.useRange.line) &&
-            !ctx.isIgnored(image.useRange.line),
+            isExternalImageRef(image.sourceRef) && !isImageLineExcluded(ctx, image.useRange.line),
         )
-        .map((image) =>
-          diag(
-            this,
-            '外部画像は到達性・Content-Type・note.com からの取得可否を自動検証できません',
+        .map((image) => {
+          const safe = isSafeExternalImageRef(image.sourceRef);
+          return diag(
+            { ...this, severity: safe ? 'warning' : 'error' },
+            safe
+              ? '外部画像は到達性・Content-Type・note.com からの取得可否を自動検証できません'
+              : 'この外部画像 URL は安全な HTTPS または許可された data:image 形式ではありません',
             image.line,
             image.column,
             image.length,
-          ),
-        );
+          );
+        });
     },
   },
 
@@ -691,11 +747,13 @@ const rules: ValidationRule[] = [
     check(ctx) {
       const results: NoteDiagnostic[] = [];
       let openLine = -1;
+      const frontmatterLines = parseFrontmatter(ctx.text).lineCount;
 
       for (let i = 0; i < ctx.lines.length; i++) {
-        // This rule checks fence open/close even on protected lines
+        // Display-math delimiters are protected by preprocessing, so exclude
+        // frontmatter and code fences explicitly while still examining them.
         const line = ctx.lines[i];
-        if (ctx.isIgnored(i)) continue;
+        if (i < frontmatterLines || ctx.isCodeBlock(i) || ctx.isIgnored(i)) continue;
 
         if (openLine === -1 && /^\$\$\s*$/.test(line)) {
           openLine = i;
@@ -722,7 +780,7 @@ const rules: ValidationRule[] = [
     check(ctx) {
       const results: NoteDiagnostic[] = [];
       for (let i = 0; i < ctx.lines.length; i++) {
-        if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
+        if (isImageLineExcluded(ctx, i)) continue;
         for (const img of imagePathMatches(ctx, i)) {
           if (isOutsideArticleDir(ctx.articleDir, img.value)) {
             results.push(
@@ -751,7 +809,7 @@ const rules: ValidationRule[] = [
       const results: NoteDiagnostic[] = [];
 
       for (let i = 0; i < ctx.lines.length; i++) {
-        if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
+        if (isImageLineExcluded(ctx, i)) continue;
         for (const img of imagePathMatches(ctx, i)) {
           if (isExternalImageRef(img.value)) continue;
           const resolved = resolveLocalImageRef(ctx.articleDir, img.value);
@@ -784,7 +842,7 @@ const rules: ValidationRule[] = [
       const MAX_SIZE = 20 * 1024 * 1024;
 
       for (let i = 0; i < ctx.lines.length; i++) {
-        if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
+        if (isImageLineExcluded(ctx, i)) continue;
         for (const img of imagePathMatches(ctx, i)) {
           if (isExternalImageRef(img.value)) continue;
           const resolved = resolveLocalImageRef(ctx.articleDir, img.value);
@@ -823,7 +881,7 @@ const rules: ValidationRule[] = [
       const autoConvert = /\.(svg|webp|tiff?|bmp)$/i;
 
       for (let i = 0; i < ctx.lines.length; i++) {
-        if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
+        if (isImageLineExcluded(ctx, i)) continue;
         for (const img of imagePathMatches(ctx, i)) {
           if (isExternalImageRef(img.value)) continue;
           if (autoConvert.test(img.value)) {
@@ -843,7 +901,7 @@ const rules: ValidationRule[] = [
     },
   },
 
-  // note/image-unconvertible — AVIF is not supported by the conversion pipeline.
+  // note/image-unconvertible — formats that cannot be normalized without loss or metadata risk.
   {
     id: 'note/image-unconvertible',
     severity: 'error',
@@ -851,13 +909,14 @@ const rules: ValidationRule[] = [
     check(ctx) {
       const results: NoteDiagnostic[] = [];
       for (let i = 0; i < ctx.lines.length; i++) {
-        if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
+        if (isImageLineExcluded(ctx, i)) continue;
         for (const img of imagePathMatches(ctx, i)) {
-          if (!isExternalImageRef(img.value) && /\.avif$/i.test(img.value)) {
+          const extension = path.extname(normalizeImageRef(img.value)).toLowerCase();
+          if (!isExternalImageRef(img.value) && !NORMALIZABLE_IMAGE_EXTENSIONS.has(extension)) {
             results.push(
               diag(
                 this,
-                'AVIF は自動変換できません。PNG または JPEG に変換してください',
+                `${extension || '拡張子なし'} は安全な送信用画像へ変換できません。PNG または JPEG に変換してください`,
                 i,
                 img.pathStart,
                 img.length,
@@ -1136,7 +1195,7 @@ export function validate(
   disabledRules?: string[],
 ): NoteDiagnostic[] {
   const lines = text.split('\n');
-  const { protectedLines, ignoredLines } = preprocess(lines);
+  const { protectedLines, codeBlockLines, ignoredLines } = preprocess(text, lines);
   const disabled = new Set(disabledRules ?? []);
 
   const zoneCache = new Map<number, Array<[number, number]>>();
@@ -1145,6 +1204,7 @@ export function validate(
     text,
     lines,
     isProtected: (line) => protectedLines[line] ?? false,
+    isCodeBlock: (line) => codeBlockLines.has(line),
     isIgnored: (line) => ignoredLines.has(line),
     getExclusionZones: (line) => {
       if (!zoneCache.has(line)) {
@@ -1173,6 +1233,28 @@ interface AsyncValidationRule {
   check: (ctx: ValidationContext) => Promise<NoteDiagnostic[]>;
 }
 
+const MAX_VALIDATOR_IMAGE_BYTES = 20 * 1024 * 1024;
+const MAX_IMAGE_HEADER_BYTES = 256 * 1024;
+
+async function readImageHeaderBounded(filePath: string): Promise<Buffer | undefined> {
+  const handle = await fsp.open(filePath, 'r');
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > MAX_VALIDATOR_IMAGE_BYTES) return undefined;
+    const length = Math.min(stat.size, MAX_IMAGE_HEADER_BYTES);
+    const data = Buffer.alloc(length);
+    let offset = 0;
+    while (offset < length) {
+      const { bytesRead } = await handle.read(data, offset, length - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    return data.subarray(0, offset);
+  } finally {
+    await handle.close();
+  }
+}
+
 const asyncRules: AsyncValidationRule[] = [
   // note/image-missing — async version using fs.promises
   {
@@ -1183,7 +1265,7 @@ const asyncRules: AsyncValidationRule[] = [
       const results: NoteDiagnostic[] = [];
 
       for (let i = 0; i < ctx.lines.length; i++) {
-        if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
+        if (isImageLineExcluded(ctx, i)) continue;
         for (const img of imagePathMatches(ctx, i)) {
           if (isExternalImageRef(img.value)) continue;
           const resolved = await resolveLocalImageRefAsync(ctx.articleDir, img.value);
@@ -1215,7 +1297,7 @@ const asyncRules: AsyncValidationRule[] = [
       const MAX_SIZE = 20 * 1024 * 1024;
 
       for (let i = 0; i < ctx.lines.length; i++) {
-        if (ctx.isProtected(i) || ctx.isIgnored(i)) continue;
+        if (isImageLineExcluded(ctx, i)) continue;
         for (const img of imagePathMatches(ctx, i)) {
           if (isExternalImageRef(img.value)) continue;
           const resolved = await resolveLocalImageRefAsync(ctx.articleDir, img.value);
@@ -1236,6 +1318,53 @@ const asyncRules: AsyncValidationRule[] = [
             }
           } catch {
             // file doesn't exist — handled by image-missing rule
+          }
+        }
+      }
+      return results;
+    },
+  },
+
+  // note/image-low-res — Images narrower than note's 620px content column.
+  {
+    id: 'note/image-low-res',
+    severity: 'warning',
+    async check(ctx) {
+      if (!ctx.articleDir) return [];
+      const results: NoteDiagnostic[] = [];
+      const dimensionsByPath = new Map<string, Promise<ImageDimensions | undefined>>();
+
+      for (let i = 0; i < ctx.lines.length; i++) {
+        if (isImageLineExcluded(ctx, i)) continue;
+        for (const img of imagePathMatches(ctx, i)) {
+          if (isExternalImageRef(img.value)) continue;
+          const resolved = await resolveLocalImageRefAsync(ctx.articleDir, img.value);
+          if (!resolved?.exists) continue;
+          try {
+            let pending = dimensionsByPath.get(resolved.diskPath);
+            if (!pending) {
+              pending = (async () => {
+                const data = await readImageHeaderBounded(resolved.diskPath);
+                return data
+                  ? readEncodedImageDimensions(data, path.extname(resolved.diskPath))
+                  : undefined;
+              })();
+              dimensionsByPath.set(resolved.diskPath, pending);
+            }
+            const size = await pending;
+            if (size && size.width < 620) {
+              results.push(
+                diag(
+                  this,
+                  `画像の幅が ${size.width}px です。ぼやけを防ぐには 620px 以上を推奨します`,
+                  i,
+                  img.pathStart,
+                  img.length,
+                ),
+              );
+            }
+          } catch {
+            // Missing and unreadable images are handled by the dedicated rule.
           }
         }
       }
@@ -1263,7 +1392,7 @@ export async function validateAsync(
   disabledRules?: string[],
 ): Promise<NoteDiagnostic[]> {
   const lines = text.split('\n');
-  const { protectedLines, ignoredLines } = preprocess(lines);
+  const { protectedLines, codeBlockLines, ignoredLines } = preprocess(text, lines);
   const disabled = new Set(disabledRules ?? []);
 
   const zoneCache = new Map<number, Array<[number, number]>>();
@@ -1272,6 +1401,7 @@ export async function validateAsync(
     text,
     lines,
     isProtected: (line) => protectedLines[line] ?? false,
+    isCodeBlock: (line) => codeBlockLines.has(line),
     isIgnored: (line) => ignoredLines.has(line),
     getExclusionZones: (line) => {
       if (!zoneCache.has(line)) {

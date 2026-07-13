@@ -5,13 +5,11 @@
  * `access-control-allow-origin: *` are usable — note.com's editor fetches
  * pasted image URLs from the browser (cross-origin), so CORS is required.
  *
- * Priority order:
+ * Supported service:
  *
- *  1. litterbox.catbox.moe  — Fastest (0.63s), Catbox LLC (US). Stable.
- *                             CORS: *. 1h–72h retention (selectable).
- *                             Catbox terms include a commercial-use approval clause.
- *  2. imgbb.com (ibb.co)   — Opt-in fallback. Uses the non-public /json
- *                             endpoint and may stop without notice.
+ *  - litterbox.catbox.moe — CORS: *. 1h–72h retention (selectable).
+ *                           Disabled by default. Catbox terms include a
+ *                           commercial-use approval clause.
  *
  * Excluded (no CORS on served files — note.com cannot fetch):
  *  - x0.at, uguu.se, catbox.moe, tmpfiles.org — all return no
@@ -28,16 +26,18 @@ import * as vscode from 'vscode';
 const HC_TIMEOUT = 5000;
 const UPLOAD_TIMEOUT = 30000;
 const VERIFY_TIMEOUT = 10000;
-export const DEFAULT_ENABLED_SERVICE_NAMES = ['litterbox.catbox.moe'];
+const MAX_RESPONSE_BYTES = 16 * 1024;
+export const DEFAULT_ENABLED_SERVICE_NAMES: string[] = [];
+export const SUPPORTED_UPLOAD_SERVICE_NAMES = Object.freeze(['litterbox.catbox.moe']);
 
 export interface UploadService {
   readonly name: string;
   /** Estimated expiry (ms) for a file of the given size. null = permanent. */
   expiryMs(fileSize: number, expiry?: string): number | null;
   /** Lightweight connectivity check. */
-  healthCheck(): Promise<boolean>;
+  healthCheck(signal?: AbortSignal): Promise<boolean>;
   /** Upload a buffer and return the public URL. */
-  upload(data: Buffer, fileName: string, expiry?: string): Promise<string>;
+  upload(data: Buffer, fileName: string, expiry?: string, signal?: AbortSignal): Promise<string>;
 }
 
 export interface UploadOutcome {
@@ -51,11 +51,23 @@ export interface UploadOutcome {
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function headOk(url: string): Promise<boolean> {
+function timeoutSignal(timeoutMs: number, signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  if (!signal) return timeout;
+  if (signal.aborted) return signal;
+  const controller = new AbortController();
+  const abort = (): void => controller.abort();
+  signal.addEventListener('abort', abort, { once: true });
+  timeout.addEventListener('abort', abort, { once: true });
+  return controller.signal;
+}
+
+async function headOk(url: string, signal?: AbortSignal): Promise<boolean> {
   try {
     const r = await fetch(url, {
       method: 'HEAD',
-      signal: AbortSignal.timeout(HC_TIMEOUT),
+      redirect: 'error',
+      signal: timeoutSignal(HC_TIMEOUT, signal),
     });
     // 405 = Method Not Allowed — server is alive but doesn't accept HEAD
     return r.ok || r.status === 405;
@@ -71,35 +83,91 @@ async function fetchWithTimeout(
 ): Promise<Response> {
   return fetch(input, {
     ...init,
-    signal: init.signal ?? AbortSignal.timeout(timeoutMs),
+    redirect: 'error',
+    signal: timeoutSignal(timeoutMs, init.signal ?? undefined),
   });
+}
+
+async function readTextBounded(response: Response, limit = MAX_RESPONSE_BYTES): Promise<string> {
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > limit) {
+    await response.body?.cancel();
+    throw new Error(`応答が上限 ${limit} bytes を超えています`);
+  }
+  if (!response.body) return '';
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) throw new Error(`応答が上限 ${limit} bytes を超えています`);
+      chunks.push(value);
+    }
+  } catch (error) {
+    await reader.cancel();
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 function assertHttps(name: string, body: string, allowedDomains?: string[]): string {
   const url = body.trim();
-  if (!url.startsWith('https://')) {
-    throw new Error(`${name}: 想定外の応答です: ${url.slice(0, 120)}`);
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`${name}: URL が不正です: ${url.slice(0, 120)}`);
+  }
+  if (
+    parsed.protocol !== 'https:' ||
+    parsed.username !== '' ||
+    parsed.password !== '' ||
+    parsed.port !== '' ||
+    parsed.search !== '' ||
+    parsed.hash !== ''
+  ) {
+    throw new Error(`${name}: 想定外の HTTPS URL です: ${url.slice(0, 120)}`);
   }
   if (allowedDomains) {
-    let hostname: string;
-    try {
-      hostname = new URL(url).hostname;
-    } catch {
-      throw new Error(`${name}: URL が不正です: ${url.slice(0, 120)}`);
-    }
-    if (!allowedDomains.some((d) => hostname === d || hostname.endsWith('.' + d))) {
+    const hostname = parsed.hostname;
+    if (!allowedDomains.some((domain) => hostname === domain)) {
       throw new Error(`${name}: 応答ドメインが想定外です: ${hostname}`);
     }
   }
   return url;
 }
 
-async function verifyServedImage(name: string, url: string): Promise<void> {
+async function verifyServedImage(
+  name: string,
+  url: string,
+  allowedDomains: string[],
+  signal?: AbortSignal,
+): Promise<void> {
   const response = await fetch(url, {
     method: 'GET',
     headers: { Origin: 'https://note.com', Range: 'bytes=0-0' },
-    signal: AbortSignal.timeout(VERIFY_TIMEOUT),
+    redirect: 'error',
+    signal: timeoutSignal(VERIFY_TIMEOUT, signal),
   });
+  const finalUrl = response.url || url;
+  const acceptedUrl = assertHttps(name, finalUrl, allowedDomains);
+  if (acceptedUrl !== url) {
+    await response.body?.cancel();
+    throw new Error(`${name}: 配信 URL がリダイレクトされました`);
+  }
   const verificationError = servedImageVerificationError(name, response);
   await response.body?.cancel();
   if (verificationError) throw verificationError;
@@ -141,11 +209,19 @@ class Litterbox implements UploadService {
     return LITTERBOX_EXPIRY_MS[expiry] ?? 259_200_000;
   }
 
-  healthCheck(): Promise<boolean> {
-    return headOk('https://litterbox.catbox.moe/');
+  healthCheck(signal?: AbortSignal): Promise<boolean> {
+    return headOk('https://litterbox.catbox.moe/', signal);
   }
 
-  async upload(data: Buffer, fileName: string, expiry = '72h'): Promise<string> {
+  async upload(
+    data: Buffer,
+    fileName: string,
+    expiry = '72h',
+    signal?: AbortSignal,
+  ): Promise<string> {
+    if (!(expiry in LITTERBOX_EXPIRY_MS)) {
+      throw new Error(`${this.name}: 保存期間が不正です: ${expiry}`);
+    }
     const form = new FormData();
     form.append('reqtype', 'fileupload');
     form.append('time', expiry);
@@ -154,67 +230,10 @@ class Litterbox implements UploadService {
     const r = await fetchWithTimeout('https://litterbox.catbox.moe/resources/internals/api.php', {
       method: 'POST',
       body: form,
+      signal,
     });
     if (!r.ok) throw new Error(`${this.name}: HTTP ${r.status} で失敗しました`);
-    return assertHttps(this.name, await r.text(), ['catbox.moe']);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// 2. imgbb.com (ibb.co) — CORS: *, 32 MB, expiration supported
-//    Uses the non-public /json endpoint (no API key required).
-//    Served from i.ibb.co.
-// ---------------------------------------------------------------------------
-
-/** Map uploadExpiry config values to seconds for ImgBB. */
-const IMGBB_EXPIRY_SEC: Record<string, number> = {
-  '1h': 3600,
-  '12h': 43200,
-  '24h': 86400,
-  '72h': 259200,
-};
-
-class ImgBB implements UploadService {
-  readonly name = 'imgbb.com';
-
-  expiryMs(_fileSize: number, expiry = '72h'): number {
-    return (IMGBB_EXPIRY_SEC[expiry] ?? 259200) * 1000;
-  }
-
-  healthCheck(): Promise<boolean> {
-    return headOk('https://imgbb.com/');
-  }
-
-  async upload(data: Buffer, fileName: string, expiry = '72h'): Promise<string> {
-    const form = new FormData();
-    form.append('source', new Blob([new Uint8Array(data)]), fileName);
-    form.append('type', 'file');
-    form.append('action', 'upload');
-    const sec = IMGBB_EXPIRY_SEC[expiry] ?? 259200;
-    form.append('expiration', String(sec));
-
-    const r = await fetchWithTimeout('https://imgbb.com/json', {
-      method: 'POST',
-      body: form,
-    });
-    if (!r.ok) throw new Error(`${this.name}: HTTP ${r.status} で失敗しました`);
-
-    const json = (await r.json()) as {
-      status_code?: number;
-      image?: { image?: { url?: string }; url?: string };
-    };
-    if (json?.status_code !== 200) {
-      throw new Error(
-        `${this.name}: status_code ${json?.status_code ?? 'なし'}: ${JSON.stringify(json).slice(0, 200)}`,
-      );
-    }
-    const url = json?.image?.image?.url ?? json?.image?.url;
-    if (!url) {
-      throw new Error(
-        `${this.name}: 応答に画像URLがありません: ${JSON.stringify(json).slice(0, 200)}`,
-      );
-    }
-    return assertHttps(this.name, url, ['ibb.co']);
+    return assertHttps(this.name, await readTextBounded(r), ['litter.catbox.moe']);
   }
 }
 
@@ -229,19 +248,19 @@ export class ServiceManager {
   private initializedConfigKey = '';
 
   constructor() {
-    this.services = [
-      new Litterbox(), // 1. CORS: *, fastest (0.63s), temporary hosting
-      new ImgBB(), // 2. CORS: *, 32 MB, fallback
-    ];
+    this.services = [new Litterbox()];
   }
 
-  private configuredServices(): UploadService[] {
-    const names = configuredServiceNameSet(this.services.map((svc) => svc.name));
+  private configuredServices(resource?: vscode.Uri): UploadService[] {
+    const names = configuredServiceNameSet(
+      this.services.map((svc) => svc.name),
+      resource,
+    );
     return this.services.filter((svc) => names.has(svc.name));
   }
 
-  private configKey(): string {
-    return [...configuredServiceNameSet()].sort().join('|');
+  private configKey(resource?: vscode.Uri): string {
+    return [...configuredServiceNameSet(undefined, resource)].sort().join('|');
   }
 
   /**
@@ -250,24 +269,28 @@ export class ServiceManager {
    * lazily on first upload if not yet initialized.
    * Safe to call concurrently — the Promise is cached.
    */
-  initialize(): Promise<void> {
-    const configKey = this.configKey();
+  initialize(resource?: vscode.Uri): Promise<void> {
+    const configKey = this.configKey(resource);
     if (!this.initPromise || this.initializedConfigKey !== configKey) {
-      const configured = this.configuredServices();
+      const configured = this.configuredServices(resource);
       this.initializedConfigKey = configKey;
-      this.initPromise = this.doInitialize(configured, configKey);
+      this.initPromise = this.doInitialize(configured, configKey, resource);
     }
     const pending = this.initPromise;
     return pending.then(() => {
-      if (pending !== this.initPromise || this.initializedConfigKey !== this.configKey()) {
-        return this.initialize();
+      if (pending !== this.initPromise || this.initializedConfigKey !== this.configKey(resource)) {
+        return this.initialize(resource);
       }
     });
   }
 
-  private async doInitialize(configured: UploadService[], configKey: string): Promise<void> {
+  private async doInitialize(
+    configured: UploadService[],
+    configKey: string,
+    resource?: vscode.Uri,
+  ): Promise<void> {
     // Warn about unrecognized service names in settings
-    const config = vscode.workspace.getConfiguration('note-md');
+    const config = vscode.workspace.getConfiguration('note-md', resource);
     const settingNames =
       config.get<string[]>('enabledUploadServices', DEFAULT_ENABLED_SERVICE_NAMES) ?? [];
     const knownNames = new Set(this.services.map((s) => s.name));
@@ -280,7 +303,7 @@ export class ServiceManager {
     }
 
     if (configured.length === 0) {
-      if (this.configKey() === configKey) this.healthy = [];
+      if (this.configKey(resource) === configKey) this.healthy = [];
       return;
     }
 
@@ -297,7 +320,7 @@ export class ServiceManager {
 
     // A settings change may have started a newer initialization while these
     // health checks were pending. Never let the stale result overwrite it.
-    if (this.configKey() !== configKey) return;
+    if (this.configKey(resource) !== configKey) return;
     this.healthy = healthy;
 
     if (this.healthy.length === 0) {
@@ -317,11 +340,19 @@ export class ServiceManager {
    * Upload a buffer, trying healthy services in priority order.
    * Falls back to all services if none are marked healthy.
    */
-  async upload(data: Buffer, fileName: string, expiry = '72h'): Promise<UploadOutcome> {
-    await this.initialize();
+  async upload(
+    data: Buffer,
+    fileName: string,
+    expiry = '72h',
+    signal?: AbortSignal,
+    resource?: vscode.Uri,
+  ): Promise<UploadOutcome> {
+    signal?.throwIfAborted();
+    if (!signal) await this.initialize(resource);
+    signal?.throwIfAborted();
 
     // Prefer healthy services; fall back to trying all if list is empty
-    const configured = this.configuredServices();
+    const configured = this.configuredServices(resource);
     const configuredSet = new Set(configured);
     const currentlyHealthy = this.healthy.filter((service) => configuredSet.has(service));
     const candidates = currentlyHealthy.length > 0 ? currentlyHealthy : [...configured];
@@ -333,8 +364,8 @@ export class ServiceManager {
 
     for (const svc of candidates) {
       try {
-        const url = await svc.upload(data, fileName, expiry);
-        await verifyServedImage(svc.name, url);
+        const url = await svc.upload(data, fileName, expiry, signal);
+        await verifyServedImage(svc.name, url, ['litter.catbox.moe'], signal);
         const ms = svc.expiryMs(data.length, expiry);
         return {
           url,
@@ -342,6 +373,7 @@ export class ServiceManager {
           expiresAt: ms !== null ? Date.now() + ms : null,
         };
       } catch (err) {
+        if (signal?.aborted || (err instanceof Error && err.name === 'AbortError')) throw err;
         const msg = err instanceof Error ? err.message : String(err);
         errors.push(msg);
         // Remove from healthy — it just failed
@@ -353,8 +385,8 @@ export class ServiceManager {
   }
 
   /** Names of currently healthy services. */
-  get healthyNames(): string[] {
-    const configured = new Set(this.configuredServices());
+  healthyNames(resource?: vscode.Uri): string[] {
+    const configured = new Set(this.configuredServices(resource));
     return this.healthy.filter((service) => configured.has(service)).map((s) => s.name);
   }
 }
@@ -375,13 +407,13 @@ export function resetServiceManager(): void {
   _mgr = undefined;
 }
 
-function configuredServiceNameSet(knownNames?: string[]): Set<string> {
-  const config = vscode.workspace.getConfiguration('note-md');
+function configuredServiceNameSet(knownNames?: string[], resource?: vscode.Uri): Set<string> {
+  const config = vscode.workspace.getConfiguration('note-md', resource);
   const configured = config.get<string[]>('enabledUploadServices', DEFAULT_ENABLED_SERVICE_NAMES);
   const known = knownNames ? new Set(knownNames) : undefined;
   return new Set((configured ?? []).filter((name) => Boolean(name) && (!known || known.has(name))));
 }
 
-export function getEnabledUploadServiceNames(): Set<string> {
-  return configuredServiceNameSet();
+export function getEnabledUploadServiceNames(resource?: vscode.Uri): Set<string> {
+  return configuredServiceNameSet(undefined, resource);
 }

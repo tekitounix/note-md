@@ -1,0 +1,120 @@
+{
+  "schema_version": 2,
+  "plan_slug": "comprehensive-ideal-audit-2026-07",
+  "profile": "P-F",
+  "working": {
+    "model_id": "openai/gpt-5.6-sol",
+    "vendor": "openai",
+    "session_id": "codex-root-20260713"
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "auditor_vendor": "anthropic",
+      "auditor_family": "anthropic",
+      "findings": [
+        {
+          "id": "NM-01",
+          "severity": "MAJOR",
+          "status": "closed",
+          "disposition": "全許可形式を匿名PNGへ再encodeし、EXIF/GPS JPEG fixtureで非残存を確認"
+        },
+        {
+          "id": "NM-02",
+          "severity": "MAJOR",
+          "status": "closed",
+          "disposition": "ImgBB経路を削除し、外部送信先の既定値を空に固定"
+        },
+        {
+          "id": "NM-03",
+          "severity": "MAJOR",
+          "status": "closed",
+          "disposition": "workspace/provider別同意、撤回、競合防止、workspace外送信拒否を実装"
+        },
+        {
+          "id": "NM-04",
+          "severity": "MAJOR",
+          "status": "closed",
+          "disposition": "magic判定、寸法fail-closed、総量即時停止、bounded I/Oを実装し、209件と正本gateで確認"
+        },
+        {
+          "id": "NM-14",
+          "severity": "MAJOR",
+          "status": "closed",
+          "disposition": "release/VSIX/Webview修正済み。単一fresh VSIXとExtension Hostで確認"
+        },
+        {
+          "id": "NM-05",
+          "severity": "MINOR",
+          "status": "closed",
+          "disposition": "AbortSignalを実fetchまで伝播し、待機中cancel試験を追加"
+        },
+        {
+          "id": "NM-06",
+          "severity": "MINOR",
+          "status": "closed",
+          "disposition": "exact tag/version/main ancestry/fixed SHAを採用。未契約のsigned tag基盤は要件化しない"
+        },
+        {
+          "id": "NM-07",
+          "severity": "MINOR",
+          "status": "closed",
+          "disposition": "変換済みcloneをoffscreen描画してplain textを生成し、描画契約試験で確認"
+        },
+        {
+          "id": "NM-08",
+          "severity": "MINOR",
+          "status": "closed",
+          "disposition": "renderer共有allowlistをvalidatorへ適用し、HTTP等をerror化"
+        },
+        {
+          "id": "NM-09",
+          "severity": "MINOR",
+          "status": "closed",
+          "disposition": "未知/GIF/HEIC/AVIFを原本送信せず拒否"
+        },
+        {
+          "id": "NM-10",
+          "severity": "MINOR",
+          "status": "closed",
+          "disposition": "未閉鎖code fence、display math、frontmatterを原文で診断"
+        },
+        {
+          "id": "NM-11",
+          "severity": "MINOR",
+          "status": "closed",
+          "disposition": "SARIF URIを相対化"
+        },
+        {
+          "id": "NM-12",
+          "severity": "MINOR",
+          "status": "closed",
+          "disposition": "未使用SVGをVSIX対象外にし、実VSIXのarchive禁止検査で確認"
+        },
+        {
+          "id": "NM-13",
+          "severity": "MINOR",
+          "status": "closed",
+          "disposition": "一時dir buildとrename/rollbackを実装し、最終production buildで確認"
+        }
+      ],
+      "auditor_model_id": "anthropic/claude-opus-4-8",
+      "auditor_session_id": "job-8ffe36d0bc30e972",
+      "evidence_ref": "plans/audits/project-audit-2026-07/runs/20260713T082404+0900-claude-opus-4-8.md"
+    },
+    {
+      "round": 2,
+      "auditor_vendor": "anthropic",
+      "auditor_family": "anthropic",
+      "findings": [],
+      "auditor_model_id": "anthropic/claude-opus-4-8",
+      "auditor_session_id": "job-3e7cf2e397ab22cf",
+      "evidence_ref": "plans/active/comprehensive-ideal-audit-2026-07/reviews/final-opus-adopt-20260713.md"
+    }
+  ],
+  "signoff": {
+    "by": "codex-root",
+    "ref": "plans/active/comprehensive-ideal-audit-2026-07/reviews/final-opus-adopt-20260713.md",
+    "adopts_round": 2
+  }
+}

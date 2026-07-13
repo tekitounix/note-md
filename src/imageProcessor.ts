@@ -3,14 +3,13 @@
  *
  * Pipeline:
  * 1. Extract image references from markdown (local vs global)
- * 2. For each local image:
- *    a. Check if note.com supports the format (JPG, PNG, GIF, HEIC)
- *    b. Supported → use source file as-is
- *    c. Unsupported (SVG, WebP, BMP, TIFF, …) → convert to PNG in memory
- * 3. Hash source content (SHA-256)
- * 4. Skip upload if hash matches in-memory cache (same session, not expired)
- * 5. Upload to temporary hosting (ServiceManager handles fallback)
- * 6. Return URL map for preview / copy
+ * 2. Accept only bounded JPG, PNG, SVG, WebP, BMP, and TIFF input.
+ * 3. Decode and re-encode every accepted image as metadata-free PNG.
+ *    GIF, HEIC, AVIF, and unknown formats fail closed.
+ * 4. Hash source content (SHA-256)
+ * 5. Skip upload if hash matches in-memory cache (same session, not expired)
+ * 6. Upload under an anonymous hash-derived filename.
+ * 7. Return URL map for preview / copy.
  *
  * Image conversion uses Jimp (pure JS) for raster formats and
  * @resvg/resvg-wasm for SVG — no native binaries required.
@@ -28,11 +27,14 @@ import {
   type UrlMap,
 } from './upload';
 import { categorizeImageReferences } from './imageScanner';
+import { resolveLocalImageRefAsync } from './imageRefs';
 import {
-  getConvertedUploadFileName,
-  getUploadFileName,
-  resolveLocalImageRefAsync,
-} from './imageRefs';
+  detectEncodedImageFormat,
+  imageFormatForExtension,
+  NORMALIZABLE_IMAGE_EXTENSIONS,
+  readEncodedImageDimensions,
+  type ImageDimensions,
+} from './imageDimensions';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -40,10 +42,23 @@ import {
 
 const DEFAULT_WIDTH = 1240; // 2x of 620px for Retina
 const MAX_BYTES = 20 * 1024 * 1024; // 20 MB (note.com limit)
+const MAX_TOTAL_SOURCE_BYTES = 100 * 1024 * 1024;
+const MAX_TOTAL_PREPARED_BYTES = 100 * 1024 * 1024;
+const MAX_SVG_BYTES = 2 * 1024 * 1024;
+const MAX_IMAGE_COUNT = 50;
+const MAX_IMAGE_PIXELS = 20_000_000;
+const MAX_IMAGE_DIMENSION = 8192;
 const MIN_WIDTH = 620;
 const UPLOAD_CONCURRENCY = 2;
 const INTER_BATCH_DELAY_MS = 1000;
 const MAX_CONVERSION_CACHE_BYTES = 64 * 1024 * 1024;
+
+class ResourceLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ResourceLimitError';
+  }
+}
 
 const conversionCache = new Map<string, Buffer>();
 let conversionCacheBytes = 0;
@@ -53,9 +68,6 @@ export function resetImageProcessorCache(): void {
   conversionCacheBytes = 0;
   svgFontBuffers = undefined;
 }
-
-/** Formats that note.com accepts for article images. */
-const NOTE_SUPPORTED_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.heic']);
 
 // ---------------------------------------------------------------------------
 // resvg-wasm lazy initialization
@@ -190,11 +202,74 @@ async function getSvgFontBuffers(): Promise<Uint8Array[]> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Check if a file extension is natively supported by note.com.
- */
-function isNoteSupported(ext: string): boolean {
-  return NOTE_SUPPORTED_EXTS.has(ext.toLowerCase());
+function assertSafeDimensions(size: ImageDimensions, fileName: string): void {
+  if (
+    size.width > MAX_IMAGE_DIMENSION ||
+    size.height > MAX_IMAGE_DIMENSION ||
+    size.width * size.height > MAX_IMAGE_PIXELS
+  ) {
+    throw new Error(`${fileName}: 画像寸法が上限を超えています (${size.width}×${size.height}px)`);
+  }
+}
+
+function assertEncodedDimensions(data: Buffer, ext: string, fileName: string): void {
+  const actualFormat = detectEncodedImageFormat(data);
+  const declaredFormat = imageFormatForExtension(ext);
+  if (!actualFormat || !declaredFormat) {
+    throw new Error(`${fileName}: 画像形式を安全に識別できません`);
+  }
+  if (actualFormat !== declaredFormat) {
+    throw new Error(`${fileName}: 拡張子と実際の画像形式が一致しません`);
+  }
+  const actualExtension = actualFormat === 'jpeg' ? '.jpg' : `.${actualFormat}`;
+  const size = readEncodedImageDimensions(data, actualExtension);
+  if (!size && actualFormat !== 'svg') {
+    throw new Error(`${fileName}: デコード前に画像寸法を安全に取得できません`);
+  }
+  if (size) assertSafeDimensions(size, fileName);
+}
+
+function anonymousUploadName(data: Buffer): string {
+  return `note-md-${sha256(data).slice(0, 16)}.png`;
+}
+
+async function readFileBounded(filePath: string, maxBytes: number): Promise<Buffer> {
+  const limitLabel = `${maxBytes / (1024 * 1024)}MB`;
+  const handle = await fs.open(filePath, 'r');
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > maxBytes) {
+      throw new Error(`画像が上限 ${limitLabel} を超えているか通常ファイルではありません`);
+    }
+    const expectedSize = stat.size;
+    const buffer = Buffer.alloc(Math.min(expectedSize + 1, maxBytes + 1));
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, null);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    if (offset > maxBytes) throw new Error(`画像が上限 ${limitLabel} を超えています`);
+    if (offset !== expectedSize) throw new Error('読み取り中に画像ファイルが変更されました');
+    return buffer.subarray(0, offset);
+  } finally {
+    await handle.close();
+  }
+}
+
+function delayWithSignal(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(new Error('画像処理をキャンセルしました'));
+  return new Promise((resolve, reject) => {
+    function onAbort(): void {
+      clearTimeout(timer);
+      reject(new Error('画像処理をキャンセルしました'));
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 /**
@@ -234,6 +309,7 @@ async function convertToPng(
       // First pass: measure intrinsic size at native resolution
       const probe = new Resvg(srcBuffer.toString('utf-8'), { font: fontOpts });
       const intrinsicWidth = probe.width;
+      assertSafeDimensions({ width: probe.width, height: probe.height }, 'SVG');
       // Only scale down, never up (withoutEnlargement equivalent)
       const targetWidth = Math.min(intrinsicWidth, currentWidth);
       const resvg = new Resvg(srcBuffer.toString('utf-8'), {
@@ -252,6 +328,7 @@ async function convertToPng(
           srcBuffer.byteOffset + srcBuffer.byteLength,
         ) as ArrayBuffer,
       );
+      assertSafeDimensions({ width: imageData.width, height: imageData.height }, 'WebP');
       const { Jimp } = await import('jimp');
       const image = new Jimp({
         width: imageData.width,
@@ -265,6 +342,7 @@ async function convertToPng(
     } else {
       const { Jimp } = await import('jimp');
       const image = await Jimp.read(srcBuffer);
+      assertSafeDimensions({ width: image.width, height: image.height }, ext.toUpperCase());
       if (image.width > currentWidth) {
         image.resize({ w: currentWidth });
       }
@@ -287,7 +365,7 @@ async function convertToPng(
 // Public API
 // ---------------------------------------------------------------------------
 
-/** A single image ready for upload — may be the original or a converted copy. */
+/** A single normalized PNG ready for upload. */
 interface PreparedImage {
   /** Original source ref in the markdown document */
   sourceRefs: string[];
@@ -295,7 +373,7 @@ interface PreparedImage {
   uploadName: string;
   /** The image data (read into memory) */
   data: Buffer;
-  /** Whether this was converted from an unsupported format */
+  /** Whether this image was normalized to PNG. */
   converted: boolean;
 }
 
@@ -314,10 +392,14 @@ export async function processImages(
   const articleDir = path.dirname(document.fileName);
   const markdown = document.getText();
   const refs = extractImageRefs(markdown);
+  const uniqueLocalRefs = [...new Set(refs.local)];
 
-  if (refs.local.length === 0) {
+  if (uniqueLocalRefs.length === 0) {
     vscode.window.showInformationMessage('ローカル画像が見つかりません');
     return null;
+  }
+  if (uniqueLocalRefs.length > MAX_IMAGE_COUNT) {
+    throw new Error(`画像は一度に ${MAX_IMAGE_COUNT} 件まで処理できます`);
   }
 
   return vscode.window.withProgress(
@@ -327,12 +409,16 @@ export async function processImages(
       cancellable: true,
     },
     async (progress, token) => {
+      const abortController = new AbortController();
+      token.onCancellationRequested?.(() => abortController.abort());
       const registry = loadRegistry(articleDir);
       const urlMap: UrlMap = {};
       let uploadCount = 0;
       let cachedCount = 0;
       let skippedCount = 0;
       let failedCount = 0;
+      let totalSourceBytes = 0;
+      let totalPreparedBytes = 0;
       const usedServices = new Set<string>();
 
       // Phase 1: prepare images (convert if needed)
@@ -349,11 +435,16 @@ export async function processImages(
           }
           return;
         }
+        const projectedTotal = totalPreparedBytes + image.data.length;
+        if (projectedTotal > MAX_TOTAL_PREPARED_BYTES) {
+          throw new ResourceLimitError('送信準備済み画像の合計サイズが 100MB を超えています');
+        }
+        totalPreparedBytes = projectedTotal;
         preparedByHash.set(dataHash, image);
         prepared.push(image);
       };
 
-      for (const imgRef of [...new Set(refs.local)]) {
+      for (const imgRef of uniqueLocalRefs) {
         if (token.isCancellationRequested) {
           throw new Error('画像処理をキャンセルしました');
         }
@@ -366,59 +457,62 @@ export async function processImages(
         const { sourceRef, diskPath: imgPath } = resolved;
 
         const ext = path.extname(imgPath).toLowerCase();
-        const srcBuffer = await fs.readFile(imgPath);
+        if (!NORMALIZABLE_IMAGE_EXTENSIONS.has(ext)) {
+          failedCount++;
+          vscode.window.showErrorMessage(
+            `安全に送信できない画像形式です: ${path.basename(imgPath)}。PNG または JPEG に変換してください`,
+          );
+          continue;
+        }
 
-        if (isNoteSupported(ext)) {
-          if (srcBuffer.length > MAX_BYTES) {
-            failedCount++;
-            vscode.window.showErrorMessage(
-              `画像ファイルが 20MB を超えています: ${path.basename(imgPath)}`,
-            );
-            continue;
+        try {
+          const inputLimit = ext === '.svg' ? MAX_SVG_BYTES : MAX_BYTES;
+          const srcBuffer = await readFileBounded(imgPath, inputLimit);
+          const projectedSourceBytes = totalSourceBytes + srcBuffer.length;
+          if (projectedSourceBytes > MAX_TOTAL_SOURCE_BYTES) {
+            throw new ResourceLimitError('画像の合計サイズが 100MB を超えています');
           }
-          // Supported format — use as-is
+          totalSourceBytes = projectedSourceBytes;
+          assertEncodedDimensions(srcBuffer, ext, path.basename(imgPath));
+          abortController.signal.throwIfAborted();
+          progress.report({
+            message: `安全な PNG に変換中: ${path.basename(imgPath)}`,
+          });
+          const srcHash = sha256(srcBuffer);
+          const cacheKey = `png-v2:${ext}:${srcHash}`;
+          let pngBuffer = conversionCache.get(cacheKey);
+          if (!pngBuffer) {
+            pngBuffer = await convertToPng(srcBuffer, ext, extensionPath ?? '');
+            abortController.signal.throwIfAborted();
+            if (pngBuffer.length > MAX_BYTES) {
+              throw new Error('PNG 変換後の画像が 20MB を超えています');
+            }
+            assertEncodedDimensions(pngBuffer, '.png', path.basename(imgPath));
+            if (pngBuffer.length <= MAX_CONVERSION_CACHE_BYTES) {
+              conversionCache.set(cacheKey, pngBuffer);
+              conversionCacheBytes += pngBuffer.length;
+            }
+            while (conversionCacheBytes > MAX_CONVERSION_CACHE_BYTES) {
+              const oldestKey = conversionCache.keys().next().value;
+              if (!oldestKey) break;
+              const oldest = conversionCache.get(oldestKey);
+              conversionCache.delete(oldestKey);
+              conversionCacheBytes -= oldest?.length ?? 0;
+            }
+          }
           addPrepared({
             sourceRefs: [sourceRef],
-            uploadName: getUploadFileName(imgPath),
-            data: srcBuffer,
-            converted: false,
+            uploadName: anonymousUploadName(pngBuffer),
+            data: pngBuffer,
+            converted: true,
           });
-        } else {
-          // Unsupported format — convert to PNG
-          const pngName = getConvertedUploadFileName(imgPath);
-
-          const srcHash = sha256(srcBuffer);
-
-          try {
-            progress.report({
-              message: `変換中: ${path.basename(imgPath)} → PNG`,
-            });
-            const cacheKey = `png-v1:${ext}:${srcHash}`;
-            let pngBuffer = conversionCache.get(cacheKey);
-            if (!pngBuffer) {
-              pngBuffer = await convertToPng(srcBuffer, ext, extensionPath ?? '');
-              if (pngBuffer.length <= MAX_CONVERSION_CACHE_BYTES) {
-                conversionCache.set(cacheKey, pngBuffer);
-                conversionCacheBytes += pngBuffer.length;
-              }
-              while (conversionCacheBytes > MAX_CONVERSION_CACHE_BYTES) {
-                const oldestKey = conversionCache.keys().next().value;
-                if (!oldestKey) break;
-                const oldest = conversionCache.get(oldestKey);
-                conversionCache.delete(oldestKey);
-                conversionCacheBytes -= oldest?.length ?? 0;
-              }
-            }
-            addPrepared({
-              sourceRefs: [sourceRef],
-              uploadName: pngName,
-              data: pngBuffer,
-              converted: true,
-            });
-          } catch (err) {
-            failedCount++;
-            vscode.window.showErrorMessage(`変換失敗: ${path.basename(imgPath)} — ${err}`);
+        } catch (err) {
+          if (abortController.signal.aborted) {
+            throw new Error('画像処理をキャンセルしました', { cause: err });
           }
+          if (err instanceof ResourceLimitError) throw err;
+          failedCount++;
+          vscode.window.showErrorMessage(`変換失敗: ${path.basename(imgPath)} — ${err}`);
         }
       }
 
@@ -435,7 +529,7 @@ export async function processImages(
 
         // Inter-batch delay (skip for first batch)
         if (batchStart > 0) {
-          await new Promise((r) => setTimeout(r, INTER_BATCH_DELAY_MS));
+          await delayWithSignal(INTER_BATCH_DELAY_MS, abortController.signal);
         }
 
         const results = await Promise.allSettled(
@@ -447,10 +541,16 @@ export async function processImages(
               registry,
               expiry,
               force,
+              abortController.signal,
+              document.uri,
             );
             return { img, result };
           }),
         );
+
+        if (abortController.signal.aborted) {
+          throw new Error('画像処理をキャンセルしました');
+        }
 
         for (const r of results) {
           if (r.status === 'fulfilled') {

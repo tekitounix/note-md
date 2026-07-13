@@ -3,7 +3,7 @@ import * as path from 'path';
 import { NotePreviewPanel } from './previewPanel';
 import { processImages, resetImageProcessorCache } from './imageProcessor';
 import { resetServiceManager } from './services';
-import { ensureUploadConsent } from './consent';
+import { ensureUploadConsent, revokeUploadConsent } from './consent';
 import { validate, validateAsync, type NoteDiagnostic } from './validator';
 import { NoteCodeActionProvider, diagCache } from './codeActions';
 import { resetUploadCache } from './upload';
@@ -53,7 +53,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.window.showWarningMessage('Markdown ファイルを開いてください');
         return;
       }
-      if (!(await ensureUploadConsent(context))) return;
+      if (!(await ensureUploadConsent(context, editor.document.uri))) return;
       const config = vscode.workspace.getConfiguration('note-md');
       const expiry = config.get<string>('uploadExpiry', '72h');
 
@@ -75,6 +75,14 @@ export function activate(context: vscode.ExtensionContext): void {
         statusHideTimer = undefined;
         statusBar.hide();
       }, 5000);
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('note-md.revokeUploadConsent', async () => {
+      await revokeUploadConsent(context, vscode.window.activeTextEditor?.document.uri);
+      resetUploadCache();
+      resetServiceManager();
     }),
   );
 

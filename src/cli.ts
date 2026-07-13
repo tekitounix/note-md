@@ -1,5 +1,6 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { RULE_IDS, validateAsync, type NoteDiagnostic } from './validator';
 
 type OutputFormat = 'text' | 'json' | 'sarif';
@@ -118,6 +119,9 @@ function formatSarif(targets: CheckTarget[]): object {
     $schema: 'https://json.schemastore.org/sarif-2.1.0.json',
     runs: [
       {
+        originalUriBaseIds: {
+          '%SRCROOT%': { uri: pathToFileURL(`${process.cwd()}${path.sep}`).href },
+        },
         tool: {
           driver: {
             name: 'note-md',
@@ -138,7 +142,7 @@ function formatSarif(targets: CheckTarget[]): object {
             locations: [
               {
                 physicalLocation: {
-                  artifactLocation: { uri: target.file },
+                  artifactLocation: sarifArtifactLocation(target.file),
                   region: {
                     startLine: diagnostic.range.line + 1,
                     startColumn: diagnostic.range.column + 1,
@@ -152,6 +156,19 @@ function formatSarif(targets: CheckTarget[]): object {
       },
     ],
   };
+}
+
+function sarifArtifactLocation(file: string): { uri: string; uriBaseId?: string } {
+  if (file === '<stdin>') return { uri: 'stdin.md', uriBaseId: '%SRCROOT%' };
+  const absolute = path.resolve(file);
+  const relative = path.relative(process.cwd(), absolute);
+  if (relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+    return {
+      uri: relative.split(path.sep).map(encodeURIComponent).join('/'),
+      uriBaseId: '%SRCROOT%',
+    };
+  }
+  return { uri: pathToFileURL(absolute).href };
 }
 
 async function check(args: string[]): Promise<number> {

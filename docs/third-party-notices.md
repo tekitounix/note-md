@@ -11,9 +11,10 @@ note-md は MIT ライセンスで公開され、VSIX には次の実行時依�
 | Highlight.js | code highlight | BSD-3-Clause | <https://github.com/highlightjs/highlight.js> |
 | KaTeX | 数式表示と font | MIT | <https://github.com/KaTeX/KaTeX> |
 | Mermaid | diagram 表示 | MIT と推移依存の各 license | <https://github.com/mermaid-js/mermaid> |
+| yaml | frontmatter parse | ISC | <https://github.com/eemeli/yaml> |
 
 コード表示、数式表示、図表示の三つのライブラリは公開配信網から取得せず、`dist/` に同梱した版だけをプレビューで読み込む。Font Awesome は使用しない。
 
-## 外部 upload service
+## 外部画像送信サービス
 
-利用者が明示的に同意した場合、ローカル画像を litterbox.catbox.moe または設定で有効化した imgbb.com へ送信できる。これらは本プロジェクトが運営するサービスではない。利用条件、privacy、保存期間、ログ、不正利用対応は各提供者の規約に従う。記事本文、token、cookie は送信しない。
+外部送信は既定で無効である。利用者が Litterbox を明示設定し、対象ワークスペースで同意した場合だけ、ローカル画像をメタデータなしの PNG と匿名名へ変換して `litterbox.catbox.moe` へ送信する。このサービスは本プロジェクトが運営するものではなく、利用条件、個人情報の扱い、保存期間、記録、不正利用対応は提供者の規約に従う。記事本文、前付け情報、原画像の EXIF、認証情報、Cookie は送信しない。

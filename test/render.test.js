@@ -151,6 +151,22 @@ test('renderPreview and renderBody produce consistent title, body, TOC', () => {
   assert.equal(body.charCount, countNoteChars(md));
 });
 
+test('TOC keeps a stable shell and sends only list items on incremental updates', () => {
+  const empty = renderBody('# T\n\nBody');
+  assert.match(empty.tocHtml, /<aside class="side-toc" id="side-toc" hidden>/);
+  assert.equal(empty.tocListHtml, '');
+
+  const populated = renderBody('# T\n\n## Section\n\n### Child');
+  assert.match(populated.tocHtml, /<aside class="side-toc" id="side-toc">/);
+  assert.match(populated.tocListHtml, /^\s*<li class="side-toc__item"/);
+  assert.ok(!populated.tocListHtml.includes('<aside'));
+
+  const preview = renderPreview('# T\n\nBody');
+  assert.match(preview, /sideTocList\.innerHTML = msg\.tocListHtml \|\| ''/);
+  assert.match(preview, /sideToc\.hidden = !msg\.tocListHtml/);
+  assert.match(preview, /classList\.remove\('toc-collapsed'\)/);
+});
+
 test('renderBody converts ruby notation to <ruby> HTML elements', () => {
   const md = '# T\n\n｜漢字《かんじ》です';
   const result = renderBody(md);
@@ -231,6 +247,23 @@ test('renderBody preserves external frontmatter images in local Webviews', () =>
     baseUri: 'vscode-resource://article',
   });
   assert.match(result.headerHtml, /src="HTTPS:\/\/example\.com\/header\.png"/);
+});
+
+test('renderBody rejects unsafe image schemes, protocol-relative URLs, and urlMap values', () => {
+  for (const value of [
+    'http://example.com/header.png',
+    '//example.com/header.png',
+    'javascript:alert(1)',
+  ]) {
+    const header = renderBody(`---\nnote-md: { eyecatch: "${value}" }\n---\n# T`);
+    assert.equal(header.headerHtml, '');
+  }
+
+  const body = renderBody('# T\n\n![x](image.png)', {
+    urlMap: { 'image.png': 'javascript:alert(1)' },
+  });
+  assert.ok(!body.bodyHtml.includes('javascript:'));
+  assert.deepEqual(JSON.parse(body.urlMapJson), {});
 });
 
 test('countNoteChars excludes a Setext h1 title', () => {
@@ -331,6 +364,21 @@ test('renderPreview uses only bundled Webview assets and a narrow CSP', () => {
   assert.ok(!preview.includes('cdnjs.cloudflare.com'));
   assert.ok(!preview.includes('cdn.jsdelivr.net'));
   assert.match(preview, /script-src vscode-webview: 'nonce-nonce'/);
+  assert.match(preview, /base-uri 'none'/);
+  assert.match(preview, /form-action 'none'/);
+  assert.match(preview, /style-src-elem vscode-webview: 'nonce-nonce'/);
+  assert.match(preview, /style-src-attr 'unsafe-inline'/);
+  assert.match(preview, /name="viewport" content="width=device-width, initial-scale=1"/);
+  assert.match(preview, /@media only screen and \(max-width: 480px\)[\s\S]*flex-wrap: wrap/);
+});
+
+test('clipboard plain text is produced from the transformed clone', () => {
+  const preview = renderPreview('# T\n\n｜漢字《かんじ》');
+  assert.match(preview, /text: clone\.innerText/);
+  assert.ok(!preview.includes('text: el.innerText'));
+  assert.match(preview, /measurement\.appendChild\(clone\)/);
+  assert.match(preview, /document\.body\.appendChild\(measurement\)/);
+  assert.match(preview, /finally \{\s*measurement\.remove\(\)/);
 });
 
 test('renderPreview loads the optional Mermaid bundle only for Mermaid articles', () => {

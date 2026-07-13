@@ -50,6 +50,14 @@ test('flow-style config: eyecatch and version', () => {
   assert.equal(resolveEyecatch(parsed), 'cover.png');
 });
 
+test('flow-style quoted values preserve commas and colons', () => {
+  const parsed = parseFrontmatter(
+    '---\nnote-md: { eyecatch: "figures/a,b:cover.png", version: "1" }\n---\n',
+  );
+  assert.equal(parsed.noteMd.config.eyecatch, 'figures/a,b:cover.png');
+  assert.equal(parsed.noteMd.config.version, 1);
+});
+
 test('block-style config: indented children', () => {
   const parsed = parseFrontmatter(
     '---\nnote-md:\n  eyecatch: figures/cover.png\n  version: 1\n---\n\n# T',
@@ -91,13 +99,48 @@ test('coexists with other tools’ frontmatter keys', () => {
   assert.equal(parsed.noteMd.config.eyecatch, 'c.png');
 });
 
+test('nested and multiline YAML values do not corrupt note-md config', () => {
+  const parsed = parseFrontmatter(
+    '---\nsite:\n  nested:\n    values: [a, b]\ndescription: >\n  first line\n  second line\nnote-md:\n  eyecatch: cover.png\n---\n',
+  );
+  assert.equal(isNoteArticle(parsed), true);
+  assert.equal(parsed.noteMd.config.eyecatch, 'cover.png');
+});
+
+test('duplicate keys and aliases fail closed', () => {
+  const duplicate = parseFrontmatter('---\nnote-md: true\nnote-md: false\n---\n# T');
+  assert.equal(isNoteArticle(duplicate), true);
+  assert.match(duplicate.frontmatterError, /YAML/);
+  assert.equal(duplicate.content, '# T');
+
+  const alias = parseFrontmatter(
+    '---\nconfig: &config { eyecatch: cover.png }\nnote-md: *config\n---\n# T',
+  );
+  assert.equal(isNoteArticle(alias), true);
+  assert.match(alias.frontmatterError, /YAML/);
+});
+
+test('an explicit marker remains opted in when an unrelated YAML field is malformed', () => {
+  const parsed = parseFrontmatter('---\nnote-md: true\nbroken: [\n---\n# T');
+  assert.equal(isNoteArticle(parsed), true);
+  assert.match(parsed.frontmatterError, /YAML/);
+});
+
 test('schema version constant is exported', () => {
   assert.equal(typeof NOTE_MD_SCHEMA_VERSION, 'number');
   assert.ok(NOTE_MD_SCHEMA_VERSION >= 1);
 });
 
-test('unterminated frontmatter is treated as no frontmatter', () => {
+test('unterminated frontmatter preserves note intent and reports an error', () => {
   const parsed = parseFrontmatter('---\nnote-md:\nno closing fence');
-  assert.equal(parsed.noteMd.hasMarker, false);
-  assert.equal(parsed.lineCount, 0);
+  assert.equal(parsed.noteMd.hasMarker, true);
+  assert.equal(isNoteArticle(parsed), true);
+  assert.equal(parsed.lineCount, 3);
+  assert.match(parsed.frontmatterError, /閉じ区切り/);
+});
+
+test('frontmatter without a close fence is bounded to 100 content lines', () => {
+  const parsed = parseFrontmatter(['---', 'note-md: true', ...Array(110).fill('x: y')].join('\n'));
+  assert.equal(parsed.lineCount, 101);
+  assert.match(parsed.frontmatterError, /100 行以内/);
 });
