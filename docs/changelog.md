@@ -6,7 +6,9 @@
 
 ### 追加
 
-- プレビューを開かなくても Markdown 文書を検査する常時バリデーションと Quick Fix
+- frontmatter の `note-md` マーカーで note 記事を認識するオプトイン方式のバリデーションと Quick Fix。通常の Markdown には警告を出さない
+- `note-md` ヘッダーの `eyecatch`（プレビュー用アイキャッチ）と、開いている Markdown へマーカーを挿入する「note ヘッダーを追加」コマンド
+- すべての Markdown を検査する `note-md.validator.treatAllMarkdownAsNote` 設定
 - VS Code と同じルールを text、JSON、SARIF で実行できる `note-md` CLI
 - note 向け記事の執筆、検査、プレビュー確認を案内する AI スキル
 - 参照形式、HTML、frontmatter、空白や括弧を含むパスに対応した共通画像スキャナー

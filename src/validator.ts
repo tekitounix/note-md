@@ -9,6 +9,7 @@ import {
   resolveLocalImageRefAsync,
 } from './imageRefs';
 import { scanImageReferences, type MarkdownImageReference } from './imageScanner';
+import { parseFrontmatter, NOTE_MD_SCHEMA_VERSION } from './frontmatter';
 
 // ─── Interfaces ─────────────────────────────────────────────
 
@@ -1089,6 +1090,38 @@ const rules: ValidationRule[] = [
       }
 
       return results;
+    },
+  },
+
+  // note/unsupported-version — note-md header written for a newer schema version
+  {
+    id: 'note/unsupported-version',
+    severity: 'info',
+    trigger: 'change',
+    check(ctx) {
+      const { noteMd } = parseFrontmatter(ctx.text);
+      if (!noteMd.hasMarker || noteMd.optOut) return [];
+      const v = noteMd.config.version;
+      if (v === undefined || v <= NOTE_MD_SCHEMA_VERSION) return [];
+      // Anchor on the `version:` line if present, else the `note-md:` line.
+      let line = 0;
+      for (let i = 0; i < ctx.lines.length && i <= 100; i++) {
+        if (i > 0 && ctx.lines[i].trimEnd() === '---') break;
+        if (/^note-md\s*:/.test(ctx.lines[i])) line = i;
+        if (/version\s*:/.test(ctx.lines[i])) {
+          line = i;
+          break;
+        }
+      }
+      return [
+        diag(
+          this,
+          `この記事は新しい note-md 形式 (version ${v}) で書かれています。拡張を更新してください`,
+          line,
+          0,
+          (ctx.lines[line] ?? '').length,
+        ),
+      ];
     },
   },
 ];

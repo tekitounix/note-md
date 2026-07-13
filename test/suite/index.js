@@ -41,7 +41,18 @@ async function runNamed(name, fn) {
 async function testOpenPreview() {
   const doc = await openMarkdown(
     'preview-diagnostics.md',
-    ['# テスト記事', '', '#### 深すぎる見出し', '', '本文に *斜体* を含める。', ''].join('\n'),
+    [
+      '---',
+      'note-md:',
+      '---',
+      '',
+      '# テスト記事',
+      '',
+      '#### 深すぎる見出し',
+      '',
+      '本文に *斜体* を含める。',
+      '',
+    ].join('\n'),
   );
 
   const extension = vscode.extensions.getExtension('tekitounix.note-md');
@@ -51,6 +62,19 @@ async function testOpenPreview() {
   const commands = await vscode.commands.getCommands(true);
   assert.ok(commands.includes('note-md.openPreview'));
   assert.ok(commands.includes('note-md.processImages'));
+  assert.ok(commands.includes('note-md.addHeader'));
+
+  // A plain Markdown file without the note-md marker must NOT be validated.
+  const plainDoc = await openMarkdown(
+    'plain.md',
+    ['# 普通のメモ', '', '#### 深い見出し', '', '*斜体* もある。', ''].join('\n'),
+  );
+  await delay(500);
+  const plainDiags = vscode.languages
+    .getDiagnostics(plainDoc.uri)
+    .filter((diag) => diag.source === 'note-md');
+  assert.equal(plainDiags.length, 0, 'unmarked Markdown must produce no note-md diagnostics');
+  await vscode.window.showTextDocument(doc, { preview: false });
 
   // Problems must appear before the preview is opened.
   const diagnostics = await waitForDiagnostics(doc.uri, ['note/no-h456', 'note/no-italic']);
@@ -81,18 +105,19 @@ async function testOpenPreview() {
 async function testQuickFix() {
   const doc = await openMarkdown(
     'quickfix.md',
-    ['# テスト記事', '', '#### 修正対象の見出し', ''].join('\n'),
+    ['---', 'note-md:', '---', '', '# テスト記事', '', '#### 修正対象の見出し', ''].join('\n'),
   );
 
   await vscode.commands.executeCommand('note-md.openPreview');
   await waitForDiagnostics(doc.uri, ['note/no-h456']);
 
+  // The `#### 修正対象の見出し` heading is on line 6 (after the 4-line header).
   const action = await waitFor(async () => {
     const actions =
       (await vscode.commands.executeCommand(
         'vscode.executeCodeActionProvider',
         doc.uri,
-        new vscode.Range(2, 0, 2, 4),
+        new vscode.Range(6, 0, 6, 4),
         vscode.CodeActionKind.QuickFix.value,
       )) ?? [];
     return actions.find((item) => item.title === 'h3 (###) に変換') ?? false;
@@ -101,7 +126,7 @@ async function testQuickFix() {
 
   const applied = await vscode.workspace.applyEdit(action.edit);
   assert.equal(applied, true);
-  assert.match(doc.lineAt(2).text, /^###\s/);
+  assert.match(doc.lineAt(6).text, /^###\s/);
 }
 
 async function openMarkdown(fileName, content) {

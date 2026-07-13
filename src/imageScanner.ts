@@ -1,4 +1,4 @@
-import { parseFrontmatter } from './frontmatter';
+import { parseFrontmatter, resolveEyecatch } from './frontmatter';
 import { canonicalizeMarkdownImageRef, isExternalImageRef } from './imageRefs';
 
 export interface ImageSourceRange {
@@ -209,23 +209,27 @@ export function scanImageReferences(markdown: string): MarkdownImageReference[] 
   const parsed = parseFrontmatter(markdown);
   const originalLines = markdown.split('\n');
 
-  if (parsed.data.header) {
-    const headerLine = originalLines.findIndex((line, index) => {
-      return index > 0 && index < parsed.lineCount && /^\s*header\s*:/.test(line);
+  const eyecatch = resolveEyecatch(parsed);
+  if (eyecatch) {
+    // Locate the frontmatter line carrying the eyecatch path (legacy `header:`,
+    // `note-md: { eyecatch: ... }` flow, or block-style `  eyecatch: ...`).
+    const refLine = originalLines.findIndex((line, index) => {
+      return index > 0 && index < parsed.lineCount && line.includes(eyecatch);
     });
-    const column = headerLine >= 0 ? originalLines[headerLine].indexOf(parsed.data.header) : 0;
+    const line = Math.max(refLine, 0);
+    const column = refLine >= 0 ? originalLines[refLine].indexOf(eyecatch) : 0;
     references.push({
-      sourceRef: parsed.data.header,
+      sourceRef: eyecatch,
       alt: 'ヘッダー画像',
-      line: Math.max(headerLine, 0),
+      line,
       column: Math.max(column, 0),
-      length: parsed.data.header.length,
+      length: eyecatch.length,
       kind: 'frontmatter',
-      altRange: { line: Math.max(headerLine, 0), column: 0, length: 0 },
+      altRange: { line, column: 0, length: 0 },
       useRange: {
-        line: Math.max(headerLine, 0),
+        line,
         column: Math.max(column, 0),
-        length: parsed.data.header.length,
+        length: eyecatch.length,
       },
     });
   }

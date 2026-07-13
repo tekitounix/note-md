@@ -19,7 +19,7 @@ import {
   resolveLocalImageRef,
   resolveMappedImageUrl,
 } from './imageRefs';
-import { parseFrontmatter } from './frontmatter';
+import { parseFrontmatter, resolveEyecatch } from './frontmatter';
 
 const SANITIZE_OPTIONS: sanitizeHtml.IOptions = {
   allowedTags: [
@@ -405,8 +405,9 @@ function renderContent(
   charCount: number;
   headerImagePath?: string;
 } {
-  // Parse frontmatter (e.g. header image) and strip it before rendering
-  const { data: frontmatter, content: markdownBody, lineCount } = parseFrontmatter(markdown);
+  // Parse frontmatter (eyecatch image, note-md marker) and strip it before rendering
+  const parsed = parseFrontmatter(markdown);
+  const { content: markdownBody, lineCount } = parsed;
   let body = md.render(markdownBody, { lineOffset: lineCount });
   body = sanitizeRenderedHtml(body);
 
@@ -443,8 +444,8 @@ function renderContent(
 
   const urlMapJson = opts?.urlMap ? JSON.stringify(opts.urlMap).replace(/</g, '\\u003c') : '{}';
 
-  // Resolve header image path from frontmatter
-  let headerImagePath = frontmatter.header;
+  // Resolve eyecatch image path from frontmatter (note-md.eyecatch, then legacy header)
+  let headerImagePath = resolveEyecatch(parsed);
   if (headerImagePath) {
     const mapped = resolveMappedImageUrl(opts?.urlMap, headerImagePath);
     if (mapped) {

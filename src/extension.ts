@@ -7,6 +7,7 @@ import { ensureUploadConsent } from './consent';
 import { validate, validateAsync, type NoteDiagnostic } from './validator';
 import { NoteCodeActionProvider, diagCache } from './codeActions';
 import { resetUploadCache } from './upload';
+import { parseFrontmatter, isNoteArticle } from './frontmatter';
 
 const validationRequests = new Map<string, number>();
 let nextValidationRequest = 0;
@@ -74,6 +75,33 @@ export function activate(context: vscode.ExtensionContext): void {
         statusHideTimer = undefined;
         statusBar.hide();
       }, 5000);
+    }),
+  );
+
+  // Add note-md header command — promote a plain Markdown file to a note article.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('note-md.addHeader', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || editor.document.languageId !== 'markdown') {
+        vscode.window.showWarningMessage('Markdown ファイルを開いてください');
+        return;
+      }
+      const doc = editor.document;
+      const parsed = parseFrontmatter(doc.getText());
+      if (parsed.noteMd.hasMarker) {
+        vscode.window.showInformationMessage('既に note-md ヘッダーがあります');
+        return;
+      }
+      await editor.edit((builder) => {
+        if (parsed.lineCount > 0) {
+          // Insert into the existing frontmatter, right after the opening `---`.
+          builder.insert(new vscode.Position(1, 0), 'note-md:\n');
+        } else {
+          // Prepend a new frontmatter block.
+          builder.insert(new vscode.Position(0, 0), '---\nnote-md:\n---\n\n');
+        }
+      });
+      runValidation(doc, 'change', diagnostics);
     }),
   );
 
@@ -232,6 +260,16 @@ function runValidation(
   const config = vscode.workspace.getConfiguration('note-md');
   const disabledRules = config.get<string[]>('validator.disabledRules', []);
   const articleDir = path.dirname(doc.fileName);
+
+  // Opt-in gate: validate only files marked as note articles (a `note-md`
+  // frontmatter marker), unless the workspace opts into linting all Markdown.
+  // For non-note files, clear any existing diagnostics and stop. This also
+  // clears diagnostics when a marker is removed from a previously-marked file.
+  const treatAll = config.get<boolean>('validator.treatAllMarkdownAsNote', false);
+  if (!treatAll && !isNoteArticle(parseFrontmatter(doc.getText()))) {
+    applyDiagnostics(doc, [], collection);
+    return;
+  }
 
   if (trigger === 'save') {
     // Use async validation for save to avoid blocking on fs I/O

@@ -47,6 +47,10 @@
       {
         "command": "note-md.processImages",
         "title": "note 向けに画像を処理してアップロード"
+      },
+      {
+        "command": "note-md.addHeader",
+        "title": "note ヘッダーを追加"
       }
     ],
     "menus": {
@@ -115,10 +119,16 @@
               "note/multiple-h1",
               "note/hr-variant",
               "note/unclosed-html-tag",
-              "note/consecutive-blanks"
+              "note/consecutive-blanks",
+              "note/unsupported-version"
             ]
           },
           "description": "無効にするバリデーションルール ID の一覧 (例: [\"note/no-inline-code\", \"note/hr-variant\"])"
+        },
+        "note-md.validator.treatAllMarkdownAsNote": {
+          "type": "boolean",
+          "default": false,
+          "description": "すべての Markdown を note 記事として検証します。既定では frontmatter に note-md マーカーがあるファイルだけを検証します"
         }
       }
     }

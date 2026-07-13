@@ -38,7 +38,7 @@
 - note 非対応書式（テーブル、インラインコード、イタリックなど）を警告
 - タイトル用 h1 の欠落、変換できない AVIF、未検証の外部画像を公開前に検出
 - VS Code の Problems パネルに表示
-- プレビューを開いていない Markdown 文書でも常時検査
+- frontmatter に `note-md` マーカーを持つ記事だけを検査（通常の Markdown は対象外。[note-md ヘッダー](#note-md-ヘッダー)参照）
 - 画像パスの安全性チェック（パストラバーサル検出）
 - 空の画像代替テキストにアクセシビリティのヒントを表示
 - QuickFix 対応（h1 分割、画像 title 除去など）
@@ -123,6 +123,34 @@ note-md rules
 
 詳細は [docs/format-reference.md](docs/format-reference.md) を参照してください。
 
+## note-md ヘッダー
+
+バリデーションは、frontmatter に `note-md` マーカーを持つファイルだけを対象にします。通常の Markdown（README や技術メモなど）に note 非対応構文の警告が出るのを防ぐためのオプトイン方式です。マーカーが無いファイルでもプレビュー（「note プレビューを開く」）はいつでも使えます。
+
+最小形（これだけで note 記事として認識されます）:
+
+```yaml
+---
+note-md:
+---
+```
+
+任意フィールドを付ける場合（フロー記法なら 3 行に収まります）:
+
+```yaml
+---
+note-md: { eyecatch: figures/cover.png }
+---
+```
+
+| フィールド | 意味 | 既定 |
+|------|------|------|
+| （マーカー自体） | 必須。存在するだけで note 記事として検証対象になる。`note-md: false` で明示的に対象外 | — |
+| `eyecatch` | プレビューに表示するアイキャッチ画像パス（プレビュー専用。実際の note 記事のアイキャッチは note 側で設定します） | なし |
+| `version` | ヘッダー形式のバージョン。通常は書きません（将来の互換性のために拡張が読みます） | 最新 |
+
+本文フォント（ゴシック体／明朝体）はヘッダーではなく、プレビュー上のボタンで切り替えます。既存の `header:` トップレベルキーは `eyecatch` の後方互換として引き続き読み込まれます。コマンド「note ヘッダーを追加」で、開いている Markdown にマーカーを挿入できます。
+
 ## 設定
 
 | 設定 | 説明 | デフォルト |
@@ -130,6 +158,7 @@ note-md rules
 | `note-md.uploadExpiry` | 画像アップロードの有効期限 | `72h` |
 | `note-md.enabledUploadServices` | 利用するアップロードサービス名の一覧 | `['litterbox.catbox.moe']` |
 | `note-md.validator.disabledRules` | 無効化するバリデーションルール ID | `[]` |
+| `note-md.validator.treatAllMarkdownAsNote` | すべての Markdown を note 記事として検証する（マーカー不要の旧挙動） | `false` |
 
 ## データの取り扱い
 

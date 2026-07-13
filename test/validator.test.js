@@ -780,3 +780,33 @@ test('quickfix: note/no-image-title includes fix', () => {
   assert.ok(diags[0].fixes, 'no-image-title should provide fixes');
   assert.ok(diags[0].fixes.length > 0);
 });
+
+// =====================================================================
+// note/unsupported-version — forward-compat marker
+// =====================================================================
+
+test('unsupported-version: fires when note-md.version exceeds supported schema', () => {
+  const text = '---\nnote-md: { version: 99 }\n---\n\n# Title';
+  const diags = findByRule(validate(text, 'change'), 'note/unsupported-version');
+  assert.equal(diags.length, 1);
+  assert.equal(diags[0].severity, 'info');
+});
+
+test('unsupported-version: silent for current or absent version', () => {
+  assert.equal(
+    findByRule(
+      validate('---\nnote-md: { version: 1 }\n---\n# T', 'change'),
+      'note/unsupported-version',
+    ).length,
+    0,
+  );
+  assert.equal(
+    findByRule(validate('---\nnote-md:\n---\n# T', 'change'), 'note/unsupported-version').length,
+    0,
+  );
+});
+
+test('unsupported-version: silent when opted out', () => {
+  const text = '---\nnote-md: false\n---\n# T';
+  assert.equal(findByRule(validate(text, 'change'), 'note/unsupported-version').length, 0);
+});
