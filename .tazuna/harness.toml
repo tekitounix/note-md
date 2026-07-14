@@ -1,5 +1,5 @@
-tazuna_sha = "f9e38bf5e5fd8b70fc31109dbf50f3bbb78f3e70"
-last_sync = "2026-07-12T22:21:47+00:00"
+tazuna_sha = "0f9b2816803a29d741f66da30b9a6c8a49ffde90"
+last_sync = "2026-07-14T11:44:16+00:00"
 workflow_tier = "C"
 branch_strategy = "trunk"
 project_type = "external"
